@@ -2,6 +2,14 @@
 
 A lightweight OpenClaw plugin for task-based progress tracking and workflow management in long-running agent conversations.
 
+## What's New in v0.4.0
+
+- **Scheduled Updates**: `progress_schedule` / `progress_unschedule` for long-running tasks
+- **Feishu Cards**: Pinned progress cards that auto-refresh on updates
+- **Better Renderer**: Status-colored headers, progress bars, metrics overview
+
+See [CHANGELOG.md](./CHANGELOG.md) for full history.
+
 ## Features
 
 - **Task-based Progress**: Track multiple tasks with stable `taskId` per conversation
