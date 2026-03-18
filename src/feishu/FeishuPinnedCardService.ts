@@ -1,5 +1,4 @@
 import type { ProgressManager } from "../ProgressManager.js";
-import type { TaskState } from "../types.js";
 import { FeishuCardRenderer } from "./FeishuCardRenderer.js";
 import { FeishuCardPusher } from "./FeishuCardPusher.js";
 import { FeishuPinnedCardStore } from "./FeishuPinnedCardStore.js";
@@ -26,7 +25,7 @@ export class FeishuPinnedCardService {
       throw new Error(`Task not found: ${args.taskId}`);
     }
 
-    const existing = this.store.get(args.conversationId, args.taskId);
+    const existing = await this.store.get(args.conversationId, args.taskId);
     const summary = args.showSummary
       ? await this.manager.summarizeTask(args.conversationId, args.taskId)
       : undefined;
@@ -37,20 +36,9 @@ export class FeishuPinnedCardService {
     });
 
     if (existing) {
-      await this.pusher.updateCard({
-        messageId: existing.messageId,
-        card,
-      });
-
-      this.store.set({
-        ...existing,
-        updatedAt: Date.now(),
-      });
-
-      return {
-        messageId: existing.messageId,
-        created: false,
-      };
+      await this.pusher.updateCard({ messageId: existing.messageId, card });
+      await this.store.set({ ...existing, updatedAt: Date.now() });
+      return { messageId: existing.messageId, created: false };
     }
 
     const messageId = await this.pusher.sendCard({
@@ -59,7 +47,7 @@ export class FeishuPinnedCardService {
       card,
     });
 
-    this.store.set({
+    await this.store.set({
       conversationId: args.conversationId,
       taskId: args.taskId,
       messageId,
@@ -69,50 +57,41 @@ export class FeishuPinnedCardService {
       updatedAt: Date.now(),
     });
 
-    return {
-      messageId,
-      created: true,
-    };
+    return { messageId, created: true };
   }
 
   async refresh(conversationId: string, taskId: string, showSummary = false): Promise<boolean> {
-    const record = this.store.get(conversationId, taskId);
+    const record = await this.store.get(conversationId, taskId);
     if (!record) return false;
 
     const task = await this.manager.getTask(conversationId, taskId);
     if (!task) return false;
 
-    const summary = showSummary
-      ? await this.manager.summarizeTask(conversationId, taskId)
-      : undefined;
+    const summary = showSummary ? await this.manager.summarizeTask(conversationId, taskId) : undefined;
+    const card = this.renderer.renderTaskCard(task, { showSummary, summaryText: summary });
 
-    const card = this.renderer.renderTaskCard(task, {
-      showSummary,
-      summaryText: summary,
-    });
-
-    await this.pusher.updateCard({
-      messageId: record.messageId,
-      card,
-    });
-
-    this.store.set({
-      ...record,
-      updatedAt: Date.now(),
-    });
+    await this.pusher.updateCard({ messageId: record.messageId, card });
+    await this.store.set({ ...record, updatedAt: Date.now() });
 
     return true;
   }
 
   async unpin(conversationId: string, taskId: string): Promise<boolean> {
-    const record = this.store.get(conversationId, taskId);
+    const record = await this.store.get(conversationId, taskId);
     if (!record) return false;
-
-    this.store.delete(conversationId, taskId);
+    await this.store.delete(conversationId, taskId);
     return true;
   }
 
-  get(conversationId: string, taskId: string) {
+  async get(conversationId: string, taskId: string) {
     return this.store.get(conversationId, taskId);
+  }
+
+  async list(conversationId?: string) {
+    return this.store.list(conversationId);
+  }
+
+  async healthCheck() {
+    return this.store.healthCheck();
   }
 }

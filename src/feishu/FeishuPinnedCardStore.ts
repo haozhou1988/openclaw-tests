@@ -1,36 +1,53 @@
-export interface FeishuPinnedCardRecord {
-  conversationId: string;
-  taskId: string;
-  messageId: string;
-  receiveId: string;
-  receiveIdType: "open_id" | "user_id" | "union_id" | "chat_id" | "email";
-  createdAt: number;
-  updatedAt: number;
-}
+import type { FeishuPinnedCardRecord } from "./types.js";
+import type { FeishuPinnedCardPersistenceAdapter } from "./persistence/FeishuPinnedCardPersistenceAdapter.js";
 
 export class FeishuPinnedCardStore {
-  private records = new Map<string, FeishuPinnedCardRecord>();
+  constructor(private adapter: FeishuPinnedCardPersistenceAdapter) {}
 
-  private key(conversationId: string, taskId: string): string {
-    return `${conversationId}::${taskId}`;
+  private key(taskId: string): string {
+    return taskId;
   }
 
-  get(conversationId: string, taskId: string): FeishuPinnedCardRecord | undefined {
-    return this.records.get(this.key(conversationId, taskId));
+  async get(conversationId: string, taskId: string): Promise<FeishuPinnedCardRecord | undefined> {
+    const records = await this.adapter.loadConversation(conversationId);
+    return records[this.key(taskId)];
   }
 
-  set(record: FeishuPinnedCardRecord): void {
-    this.records.set(this.key(record.conversationId, record.taskId), record);
+  async set(record: FeishuPinnedCardRecord): Promise<void> {
+    const records = await this.adapter.loadConversation(record.conversationId);
+    records[this.key(record.taskId)] = record;
+    await this.adapter.saveConversation(record.conversationId, records);
   }
 
-  delete(conversationId: string, taskId: string): void {
-    this.records.delete(this.key(conversationId, taskId));
+  async delete(conversationId: string, taskId: string): Promise<void> {
+    const records = await this.adapter.loadConversation(conversationId);
+    delete records[this.key(taskId)];
+    if (Object.keys(records).length === 0) {
+      await this.adapter.deleteConversation(conversationId);
+      return;
+    }
+    await this.adapter.saveConversation(conversationId, records);
   }
 
-  list(conversationId?: string): FeishuPinnedCardRecord[] {
-    const all = Array.from(this.records.values());
-    return conversationId
-      ? all.filter((r) => r.conversationId === conversationId)
-      : all;
+  async list(conversationId?: string): Promise<FeishuPinnedCardRecord[]> {
+    if (conversationId) {
+      const records = await this.adapter.loadConversation(conversationId);
+      return Object.values(records).sort((a, b) => b.updatedAt - a.updatedAt);
+    }
+    if (typeof this.adapter.listConversations !== "function") return [];
+    const conversations = await this.adapter.listConversations();
+    const all: FeishuPinnedCardRecord[] = [];
+    for (const cid of conversations) {
+      const records = await this.adapter.loadConversation(cid);
+      all.push(...Object.values(records));
+    }
+    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async healthCheck(): Promise<boolean> {
+    if (typeof this.adapter.healthCheck === "function") {
+      return this.adapter.healthCheck();
+    }
+    return true;
   }
 }

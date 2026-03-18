@@ -10,6 +10,9 @@ import { FeishuPinnedCardStore } from "./feishu/FeishuPinnedCardStore.js";
 import { FeishuPinnedCardService } from "./feishu/FeishuPinnedCardService.js";
 import type { ProgressStatus } from "./state/TaskStateMachine.js";
 
+import { MemoryFeishuPinnedCardAdapter } from "./feishu/persistence/MemoryFeishuPinnedCardAdapter.js";
+import { FileFeishuPinnedCardAdapter } from "./feishu/persistence/FileFeishuPinnedCardAdapter.js";
+
 export default function register(api: any) {
   api.logger.info("[progress-notifier] register() called");
 
@@ -37,7 +40,13 @@ export default function register(api: any) {
   const autoProgress = new AutoProgressService(manager, scheduler, pusher);
 
   // Feishu pinned card service
-  const feishuPinnedCardStore = new FeishuPinnedCardStore();
+  const feishuPinnedCardAdapter =
+    config.persistenceMode === "file"
+      ? new FileFeishuPinnedCardAdapter(`${config.persistenceDir ?? ".progress-store"}/feishu-cards`)
+      : new MemoryFeishuPinnedCardAdapter();
+
+  const feishuPinnedCardStore = new FeishuPinnedCardStore(feishuPinnedCardAdapter);
+
   const feishuPinnedCardService =
     config.feishuAppId && config.feishuAppSecret
       ? new FeishuPinnedCardService(
@@ -94,7 +103,7 @@ export default function register(api: any) {
 
       // Auto-refresh Feishu pinned card if exists
       if (feishuPinnedCardService) {
-        const pinned = feishuPinnedCardService.get(conversationId, task.taskId);
+        const pinned = await feishuPinnedCardService.get(conversationId, task.taskId);
         if (pinned) {
           try {
             await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
@@ -652,6 +661,45 @@ export default function register(api: any) {
           metadata: { conversationId, taskId: params.taskId, error: String(err) },
         };
       }
+    },
+  });
+
+  // === progress_card_status ===
+  api.registerTool({
+    name: "progress_card_status",
+    description: "Inspect Feishu pinned card bindings.",
+    parameters: Type.Object({
+      taskId: Type.Optional(Type.String()),
+    }),
+    async execute(_id: string, params: { taskId?: string }, context: any) {
+      if (!feishuPinnedCardService) {
+        return {
+          content: [{ type: "text", text: "当前未配置飞书卡片服务。" }],
+          metadata: { enabled: false },
+        };
+      }
+
+      const conversationId = pickConversationId(context);
+
+      if (params.taskId) {
+        const record = await feishuPinnedCardService.get(conversationId, params.taskId);
+        return {
+          content: [{
+            type: "text",
+            text: record ? JSON.stringify(record, null, 2) : `任务 ${params.taskId} 当前没有飞书卡片绑定。`,
+          }],
+          metadata: { conversationId, taskId: params.taskId, record: record ?? null },
+        };
+      }
+
+      const records = await feishuPinnedCardService.list(conversationId);
+      return {
+        content: [{
+          type: "text",
+          text: records.length > 0 ? JSON.stringify(records, null, 2) : "当前会话没有飞书卡片绑定记录。",
+        }],
+        metadata: { conversationId, count: records.length, records },
+      };
     },
   });
 
