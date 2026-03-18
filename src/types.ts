@@ -141,6 +141,7 @@ export interface PluginConfig {
   persistenceDir?: string;
   enableScheduledUpdates?: boolean;
   defaultUpdateIntervalMs?: number;
+  pushScheduledMessages?: boolean;
 }
 
 export interface WorkflowMetrics {

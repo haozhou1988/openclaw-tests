@@ -1,12 +1,24 @@
 import type { ProgressManager } from "../ProgressManager.js";
 import type { ScheduleMode, ScheduledTaskInfo } from "../types.js";
 import { TaskScheduler } from "./TaskScheduler.js";
+import type { ProgressMessagePusher } from "./ProgressMessagePusher.js";
 
 export class AutoProgressService {
   constructor(
     private manager: ProgressManager,
-    private scheduler: TaskScheduler
+    private scheduler: TaskScheduler,
+    private pusher?: ProgressMessagePusher
   ) {}
+
+  async pushIfPossible(args: {
+    conversationId: string;
+    taskId: string;
+    text: string;
+    mode: ScheduleMode;
+  }) {
+    if (!this.pusher) return;
+    await this.pusher.push(args);
+  }
 
   start(
     conversationId: string,
@@ -33,7 +45,7 @@ export class AutoProgressService {
         }
 
         if (mode === "heartbeat") {
-          await this.manager.updateTask(conversationId, {
+          const updated = await this.manager.updateTask(conversationId, {
             taskId,
             label: `仍在处理中：${task.label}`,
             stage: task.stage,
@@ -42,17 +54,28 @@ export class AutoProgressService {
             parentTaskId: task.parentTaskId,
             model: task.model,
           });
+
+          const text = String(this.manager.renderTask(updated, "text"));
+
+          await this.pushIfPossible({
+            conversationId,
+            taskId,
+            text,
+            mode,
+          });
+
           return;
         }
 
         if (mode === "summary") {
           const summary = this.manager.buildSummary(task);
+
           if (!summary) {
             this.scheduler.stop(conversationId, taskId);
             return;
           }
 
-          await this.manager.updateTask(conversationId, {
+          const updated = await this.manager.updateTask(conversationId, {
             taskId,
             label: `定时汇报：${task.label}`,
             stage: task.stage,
@@ -60,6 +83,15 @@ export class AutoProgressService {
             percent: task.percent,
             parentTaskId: task.parentTaskId,
             model: task.model,
+          });
+
+          const text = String(this.manager.renderTask(updated, "text"));
+
+          await this.pushIfPossible({
+            conversationId,
+            taskId,
+            text,
+            mode,
           });
         }
       }

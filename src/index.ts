@@ -1,6 +1,9 @@
 import { Type } from "@sinclair/typebox";
 import { ProgressManager, type UpdateProgressInput } from "./ProgressManager.js";
+import { TaskScheduler } from "./scheduler/TaskScheduler.js";
 import { AutoProgressService } from "./scheduler/AutoProgressService.js";
+import { NoopProgressMessagePusher } from "./scheduler/NoopProgressMessagePusher.js";
+import { ApiProgressMessagePusher } from "./scheduler/ApiProgressMessagePusher.js";
 import type { ProgressStatus } from "./state/TaskStateMachine.js";
 
 export default function register(api: any) {
@@ -13,13 +16,19 @@ export default function register(api: any) {
     promptContextLimit: api?.config?.promptContextLimit ?? 2,
     enableScheduledUpdates: api?.config?.enableScheduledUpdates ?? false,
     defaultUpdateIntervalMs: api?.config?.defaultUpdateIntervalMs ?? 60000,
+    pushScheduledMessages: api?.config?.pushScheduledMessages ?? true,
   };
 
   const manager = new ProgressManager(undefined, config);
-  const autoProgress = new AutoProgressService(manager, {
-    enableScheduledUpdates: api?.config?.enableScheduledUpdates ?? false,
-    defaultUpdateIntervalMs: api?.config?.defaultUpdateIntervalMs ?? 60000,
-  });
+
+  const scheduler = new TaskScheduler();
+
+  const pusher =
+    config.pushScheduledMessages && typeof api?.sendMessage === "function"
+      ? new ApiProgressMessagePusher(api)
+      : new NoopProgressMessagePusher();
+
+  const autoProgress = new AutoProgressService(manager, scheduler, pusher);
 
   // Helper to get conversation ID from context
   function pickConversationId(context: any): string {

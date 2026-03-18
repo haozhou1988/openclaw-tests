@@ -35,6 +35,10 @@
         "minimum": 5000,
         "default": 60000
       },
+      "pushScheduledMessages": {
+        "type": "boolean",
+        "default": true
+      },
       "persistenceMode": {
         "type": "string",
         "enum": ["memory", "file"],
