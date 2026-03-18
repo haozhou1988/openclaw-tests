@@ -101,8 +101,11 @@ export default function register(api: any) {
       parentTaskId: Type.Optional(Type.String()),
     }),
     async execute(_id: string, params: UpdateProgressInput, context: any) {
-      const conversationId = pickConversationId(context);
+      // Allow explicit conversationId in params, fallback to context
+      const conversationId = params.conversationId ?? pickConversationId(context);
       const modelName = pickModelName(context, params.model);
+
+      api.logger?.info?.("progress_update.begin", { conversationId, taskId: params.taskId });
 
       const task = await manager.updateTask(conversationId, {
         ...params,
@@ -111,42 +114,30 @@ export default function register(api: any) {
 
       let pinned: any = null;
       let refreshSucceeded = false;
+      let refreshError: string | undefined;
 
-      // Auto-refresh Feishu pinned card if exists
-      if (feishuPinnedCardService) {
+      if (feishuPinnedCardService && conversationId) {
+        api.logger?.info?.("progress_update.pin_lookup.start", { conversationId, taskId: task.taskId });
         pinned = await feishuPinnedCardService.get(conversationId, task.taskId);
-        api.logger?.info?.(
-          `[progress-notifier] progress_update: pinned=${Boolean(pinned)}, conversationId=${conversationId}, taskId=${task.taskId}`
-        );
+        api.logger?.info?.("progress_update.pin_lookup.done", { conversationId, taskId: task.taskId, found: !!pinned });
 
         if (pinned) {
           try {
             await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
             refreshSucceeded = true;
-          } catch (err) {
-            api.logger?.info?.(
-              `[progress-notifier] failed to refresh Feishu card for ${task.taskId}: ${String(err)}`
-            );
+            api.logger?.info?.("progress_update.refresh.ok", { conversationId, taskId: task.taskId });
+          } catch (err: any) {
+            refreshError = err?.message ?? String(err);
+            api.logger?.warn?.("progress_update.refresh.failed", { conversationId, taskId: task.taskId, error: refreshError });
           }
         }
       }
 
-      // Auto-stop scheduled updates when task is done
-      if (["done", "failed", "canceled"].includes(task.status)) {
-        autoProgress.stop(conversationId, task.taskId);
-      }
-
-      // Pinned card exists and refresh succeeded: suppress normal progress message to avoid duplicate chat spam.
+      // Return meaningful text if pinned and refreshed
       if (pinned && refreshSucceeded) {
         return {
-          content: [],
-          metadata: {
-            conversationId,
-            task,
-            pinned: true,
-            messageId: pinned.messageId,
-            refreshed: true,
-          },
+          content: [{ type: "text", text: `进度已更新，飞书卡片已刷新（${task.taskId}）` }],
+          metadata: { pinned: true, refreshSucceeded: true, conversationId, taskId: task.taskId },
         };
       }
 
@@ -154,12 +145,7 @@ export default function register(api: any) {
 
       return {
         content: [{ type: "text", text: rendered as string }],
-        metadata: {
-          conversationId,
-          task,
-          pinned: Boolean(pinned),
-          refreshed: refreshSucceeded,
-        },
+        metadata: { pinned: !!pinned, refreshSucceeded, refreshError, conversationId, taskId: task.taskId },
       };
     },
   });
@@ -589,7 +575,17 @@ export default function register(api: any) {
         };
       }
 
-      const conversationId = pickConversationId(context);
+      // Allow explicit conversationId in params, fallback to context
+      const conversationId = params.conversationId ?? pickConversationId(context);
+
+      api.logger?.info?.("progress_pin_card.begin", { conversationId, taskId: params.taskId });
+
+      if (!conversationId) {
+        return {
+          content: [{ type: "text", text: "缺少 conversationId，无法绑定飞书卡片" }],
+          metadata: { pinned: false },
+        };
+      }
 
       try {
         const result = await feishuPinnedCardService.pin({
@@ -600,13 +596,17 @@ export default function register(api: any) {
           showSummary: params.showSummary ?? true,
         });
 
+        api.logger?.info?.("progress_pin_card.done", { conversationId, taskId: params.taskId, result });
+
         return {
           content: [{
             type: "text",
             text: result.created
-              ? `已为任务 ${params.taskId} 创建飞书进度卡片。`
+              ? `已为任务创建飞书进度卡片（conversationId=${conversationId}, taskId=${params.taskId}）`
               : `已刷新任务 ${params.taskId} 的飞书进度卡片。`,
           }],
+          metadata: { pinned: true, conversationId, taskId: params.taskId, result },
+        };
           metadata: { conversationId, taskId: params.taskId, messageId: result.messageId, created: result.created },
         };
       } catch (err) {
