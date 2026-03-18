@@ -51,6 +51,9 @@ src/
 | `defaultStages` | string[] | ["start","research","draft","done"] | Stage pipeline |
 | `persistenceMode` | "memory" \| "file" | "memory" | Storage backend |
 | `persistenceDir` | string | ".progress-store" | File adapter directory |
+| `enableScheduledUpdates` | boolean | false | Enable scheduled progress updates |
+| `defaultUpdateIntervalMs` | number | 60000 | Default interval for scheduled updates (ms) |
+| `pushScheduledMessages` | boolean | true | Push scheduled updates to conversation |
 
 ## Tools
 
@@ -80,6 +83,56 @@ src/
 | `progress_conversations` | List persisted conversation IDs |
 | `progress_health` | Plugin & adapter health check |
 | `progress_cleanup` | Remove expired/empty tasks, rebuild index |
+
+### Scheduled Updates
+
+The plugin can enable scheduled progress updates for long-running tasks.
+
+**Use cases:**
+- Task may run for a noticeable amount of time
+- User would benefit from periodic progress visibility
+- Workflow may otherwise appear stalled
+
+#### Modes
+
+**`heartbeat`**: Lightweight periodic update that keeps task alive
+- Updates internal task history
+- Refreshes current task status
+- Can optionally push progress message to conversation
+
+**`summary`**: Recap-oriented periodic update
+- Updates internal task history
+- Generates compact progress recap
+- Suitable for document-heavy workflows
+
+#### Configuration
+
+```json
+{
+  "enableScheduledUpdates": true,
+  "defaultUpdateIntervalMs": 60000,
+  "pushScheduledMessages": true
+}
+```
+
+#### Tools
+
+| Tool | Description |
+|------|-------------|
+| `progress_schedule` | Enable scheduled progress updates |
+| `progress_unschedule` | Stop scheduled progress updates |
+
+#### Example
+
+```json
+{
+  "taskId": "paper-1",
+  "intervalMs": 60000,
+  "mode": "heartbeat"
+}
+```
+
+**Note:** Scheduled updates stop automatically when task reaches `done`, `failed`, or `canceled`.
 
 ## Usage Examples
 

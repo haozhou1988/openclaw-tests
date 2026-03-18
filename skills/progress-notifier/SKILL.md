@@ -118,6 +118,44 @@ Plugin health check. (Admin/debug)
 
 Clean expired/empty conversations. (Admin/debug)
 
+## Tool: progress_schedule
+
+Enable periodic progress updates for long-running tasks.
+
+**Parameters:**
+- `taskId` (required)
+- `intervalMs` (optional): update interval in milliseconds
+- `mode` (optional): `heartbeat | summary`
+- `enabled` (optional): set to `false` to stop scheduling
+
+**When to use:**
+- Task may run for a noticeable amount of time
+- User would benefit from periodic progress visibility
+- Workflow may otherwise appear stalled
+
+**Mode guidance:**
+- `heartbeat`: Simple keep-alive updates. Use when user just needs reassurance task is active.
+- `summary`: Periodic recap. Use when repeated heartbeats would be too noisy (e.g., Feishu chat).
+
+**Best practices:**
+- Only enable for genuinely long-running tasks
+- Prefer intervals of at least 30-60 seconds
+- Prefer `summary` mode in Feishu to avoid message spam
+
+## Tool: progress_unschedule
+
+Stop scheduled progress updates for a task.
+
+**Parameters:**
+- `taskId` (required)
+
+**When to use:**
+- Task is done, failed, or canceled
+- Periodic updates no longer needed
+- User asks to stop automatic reporting
+
+Note: Scheduled updates stop automatically when task reaches `done`, `failed`, or `canceled`.
+
 ## Feishu-specific guidance
 
 - use stable `taskId` for document workflow
