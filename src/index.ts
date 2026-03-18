@@ -116,16 +116,30 @@ export default function register(api: any) {
       let refreshSucceeded = false;
       let refreshError: string | undefined;
 
-      if (feishuPinnedCardService && conversationId) {
-        api.logger?.info?.("progress_update.pin_lookup.start", { conversationId, taskId: task.taskId });
-        pinned = await feishuPinnedCardService.get(conversationId, task.taskId);
-        api.logger?.info?.("progress_update.pin_lookup.done", { conversationId, taskId: task.taskId, found: !!pinned });
+      // Use params.taskId for lookup (not task.taskId which may be normalized)
+      const lookupTaskId = String(params.taskId).trim();
+      const lookupConversationId = conversationId ?? "unknown";
+
+      api.logger?.info?.("progress_update.pin_lookup.start", { 
+        conversationId: lookupConversationId, 
+        taskId: lookupTaskId,
+        paramsTaskId: params.taskId,
+        taskTaskId: task.taskId
+      });
+      
+      pinned = await feishuPinnedCardService.get(lookupConversationId, lookupTaskId);
+
+        api.logger?.info?.("progress_update.pin_lookup.done", { 
+          conversationId: lookupConversationId, 
+          taskId: lookupTaskId, 
+          found: !!pinned 
+        });
 
         if (pinned) {
           try {
-            await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
+            await feishuPinnedCardService.refresh(lookupConversationId, lookupTaskId, true);
             refreshSucceeded = true;
-            api.logger?.info?.("progress_update.refresh.ok", { conversationId, taskId: task.taskId });
+            api.logger?.info?.("progress_update.refresh.ok", { conversationId: lookupConversationId, taskId: lookupTaskId });
           } catch (err: any) {
             refreshError = err?.message ?? String(err);
             api.logger?.warn?.("progress_update.refresh.failed", { conversationId, taskId: task.taskId, error: refreshError });

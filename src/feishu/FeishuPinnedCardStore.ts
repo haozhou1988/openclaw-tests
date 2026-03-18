@@ -4,44 +4,34 @@ import type { FeishuPinnedCardPersistenceAdapter } from "./persistence/FeishuPin
 export class FeishuPinnedCardStore {
   constructor(private adapter: FeishuPinnedCardPersistenceAdapter) {}
 
-  private key(taskId: string): string {
-    return taskId;
+  private key(conversationId: string, taskId: string): string {
+    return `${conversationId}:${taskId}`;
   }
 
   async get(conversationId: string, taskId: string): Promise<FeishuPinnedCardRecord | undefined> {
-    const records = await this.adapter.loadConversation(conversationId);
-    return records[this.key(taskId)];
+    const records = await this.adapter.loadAll();
+    return records[this.key(conversationId, taskId)];
   }
 
   async set(record: FeishuPinnedCardRecord): Promise<void> {
-    const records = await this.adapter.loadConversation(record.conversationId);
-    records[this.key(record.taskId)] = record;
-    await this.adapter.saveConversation(record.conversationId, records);
+    const records = await this.adapter.loadAll();
+    records[this.key(record.conversationId, record.taskId)] = record;
+    await this.adapter.saveAll(records);
   }
 
   async delete(conversationId: string, taskId: string): Promise<void> {
-    const records = await this.adapter.loadConversation(conversationId);
-    delete records[this.key(taskId)];
-    if (Object.keys(records).length === 0) {
-      await this.adapter.deleteConversation(conversationId);
-      return;
-    }
-    await this.adapter.saveConversation(conversationId, records);
+    const records = await this.adapter.loadAll();
+    delete records[this.key(conversationId, taskId)];
+    await this.adapter.saveAll(records);
   }
 
   async list(conversationId?: string): Promise<FeishuPinnedCardRecord[]> {
-    if (conversationId) {
-      const records = await this.adapter.loadConversation(conversationId);
-      return Object.values(records).sort((a, b) => b.updatedAt - a.updatedAt);
-    }
-    if (typeof this.adapter.listConversations !== "function") return [];
-    const conversations = await this.adapter.listConversations();
-    const all: FeishuPinnedCardRecord[] = [];
-    for (const cid of conversations) {
-      const records = await this.adapter.loadConversation(cid);
-      all.push(...Object.values(records));
-    }
-    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+    const records = await this.adapter.loadAll();
+    const all = Object.values(records);
+    if (!conversationId) return all.sort((a, b) => b.updatedAt - a.updatedAt);
+    return all
+      .filter(r => r.conversationId === conversationId)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   async healthCheck(): Promise<boolean> {
