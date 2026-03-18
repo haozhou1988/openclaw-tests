@@ -67,10 +67,15 @@ export default function register(api: any) {
     `feishuAppId=${Boolean(config.feishuAppId)}, feishuAppSecret=${Boolean(config.feishuAppSecret)}`
   );
 
-  // Helper to get conversation ID from context
-  function pickConversationId(context: any): string {
+  // Helper to get conversation ID from context (fallback)
+  function pickConversationId(context: any): string | undefined {
     // For Feishu: use a fixed ID to persist pinned cards across calls
     return "feishu";
+  }
+
+  // Helper to resolve conversation ID from params or context
+  function resolveConversationId(params: any, context: any): string | undefined {
+    return params.conversationId ?? pickConversationId(context);
   }
 
   // Helper to get model name from context
@@ -102,7 +107,7 @@ export default function register(api: any) {
     }),
     async execute(_id: string, params: UpdateProgressInput, context: any) {
       // Allow explicit conversationId in params, fallback to context
-      const conversationId = params.conversationId ?? pickConversationId(context);
+      const conversationId = resolveConversationId(params, context);
       const modelName = pickModelName(context, params.model);
 
       api.logger?.info?.("progress_update.begin", { conversationId, taskId: params.taskId });
@@ -118,28 +123,42 @@ export default function register(api: any) {
 
       // Use params.taskId for lookup (not task.taskId which may be normalized)
       const lookupTaskId = String(params.taskId).trim();
-      const lookupConversationId = conversationId ?? "unknown";
+
+      // Skip pinned lookup if conversationId is missing
+      if (!conversationId) {
+        api.logger?.warn?.("progress_update.missing_conversation_id", { taskId: lookupTaskId });
+        const rendered = manager.renderTask(task);
+        return {
+          content: [{ type: "text", text: rendered as string }],
+          metadata: {
+            pinned: false,
+            refreshSucceeded: false,
+            warning: "Missing conversationId, skipped pinned card lookup",
+            taskId: lookupTaskId,
+          },
+        };
+      }
 
       api.logger?.info?.("progress_update.pin_lookup.start", { 
-        conversationId: lookupConversationId, 
+        conversationId, 
         taskId: lookupTaskId,
         paramsTaskId: params.taskId,
         taskTaskId: task.taskId
       });
       
-      pinned = await feishuPinnedCardService.get(lookupConversationId, lookupTaskId);
+      pinned = await feishuPinnedCardService.get(conversationId, lookupTaskId);
 
         api.logger?.info?.("progress_update.pin_lookup.done", { 
-          conversationId: lookupConversationId, 
+          conversationId, 
           taskId: lookupTaskId, 
           found: !!pinned 
         });
 
         if (pinned) {
           try {
-            await feishuPinnedCardService.refresh(lookupConversationId, lookupTaskId, true);
+            await feishuPinnedCardService.refresh(conversationId, lookupTaskId, true);
             refreshSucceeded = true;
-            api.logger?.info?.("progress_update.refresh.ok", { conversationId: lookupConversationId, taskId: lookupTaskId });
+            api.logger?.info?.("progress_update.refresh.ok", { conversationId, taskId: lookupTaskId });
           } catch (err: any) {
             refreshError = err?.message ?? String(err);
             api.logger?.warn?.("progress_update.refresh.failed", { conversationId, taskId: task.taskId, error: refreshError });
