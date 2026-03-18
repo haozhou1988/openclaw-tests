@@ -1,0 +1,44 @@
+{
+  "id": "progress-notifier",
+  "name": "Progress Notifier",
+  "description": "Task-based staged progress notifications for long-running agent tasks",
+  "version": "0.3.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ttlMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "default": 600000
+      },
+      "injectPromptContext": {
+        "type": "boolean",
+        "default": true
+      },
+      "promptContextLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2
+      },
+      "defaultStages": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["start", "research", "draft", "revise", "done"]
+      },
+      "enableScheduledUpdates": {
+        "type": "boolean",
+        "default": false
+      },
+      "defaultUpdateIntervalMs": {
+        "type": "integer",
+        "minimum": 5000,
+        "default": 60000
+      }
+    }
+  },
+  "skills": ["./skills/progress-notifier"],
+  "runtime": {
+    "entry": "src/index.ts"
+  }
+}
