@@ -220,6 +220,18 @@ export class ProgressManager {
     return this.treeManager.getChildren(tasks, taskId);
   }
 
+  async metricsForTask(conversationId: string, taskId: string): Promise<any> {
+    const task = await this.getTask(conversationId, taskId);
+    if (!task) return null;
+
+    return {
+      totalDurationMs: task.updatedAt - task.createdAt,
+      updateCount: task.history.length,
+      retryCount: task.history.filter((h: any) => h.status === "retrying").length,
+      blockCount: task.history.filter((h: any) => h.status === "blocked").length,
+    };
+  }
+
   async descendantsOfTask(conversationId: string, taskId: string): Promise<TaskState[]> {
     const tasks = await this.listTasks(conversationId);
     return this.treeManager.getDescendants(tasks, taskId);
