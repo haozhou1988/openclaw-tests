@@ -1,188 +1,293 @@
-# Feishu Progress Reporting
+# Feishu Progress Workflow
 
-When handling a Feishu chat request that involves reading, summarizing, rewriting, structuring, or writing back a Feishu document, treat the work as a multi-step workflow rather than a single reply. For tasks that require noticeable processing time or multiple stages, use the progress tools to report meaningful milestones, keep one stable `taskId` across the whole task lifecycle, and send the returned progress message back to the user after each `progress_update`. Prefer short, user-facing labels such as "开始处理文档""正在读取并分析文档""正在整理摘要""正在写回文档", and use summary/tree/metrics tools only when they provide clear value for the user or help resume interrupted work.
+Use this skill when a Feishu-facing task is large enough that the user may wonder whether the agent is still working, waiting on an external API, or stuck.
 
-## When to use this skill
+The goal is not just to show progress. The goal is to make long-running work observable.
 
-Use the progress tools when a Feishu chat task involves:
-- reading a long Feishu document
-- summarizing a Feishu document
-- extracting action items or decisions from notes
-- rewriting or restructuring document content
-- generating a new document from source material
-- multi-step analysis
-- writing results back to a Feishu document
-- any workflow that clearly has multiple meaningful stages
+## Use This Skill When
 
-Do **not** use progress tools for:
-- very short tasks that can be answered immediately
-- simple one-shot questions
-- tiny edits that do not need staged reporting
+Use the progress tools when the task has one or more of these properties:
 
-## Main behavior
+- the work has multiple meaningful stages
+- the work may take more than 1-2 minutes
+- the user asked for Feishu updates or a pinned card
+- the workflow includes reading, summarizing, rewriting, or writing back a Feishu document
+- the workflow includes external waits such as model calls, search APIs, or document APIs
 
-For a long or multi-stage task:
+Do not use progress tools for:
 
-1. Start the task with `progress_update`
-2. Send the returned progress message to the user
-3. Continue the work
-4. Update progress when the task reaches a meaningful new stage
-5. Finish with a final `progress_update(..., stage="done", status="done", percent=100)`
+- tiny one-shot questions
+- very small edits
+- tasks that can be completed in a single reply without noticeable wait time
 
-Always keep one stable `taskId` for the whole task lifecycle.
+## Core Principles
 
-## Recommended stages
+- Keep one stable `taskId` for the full lifecycle of a task.
+- Prefer one parent task for the overall workflow and child tasks for meaningful sub-work.
+- Update child tasks for real work. Let the parent aggregate automatically.
+- If a task is pinned to Feishu and the tool returns no normal text, do not add extra filler messages.
+- Do not fake progress just to look busy.
+- Use waiting states when the agent is blocked on an external dependency.
 
-Use these stages unless the task needs a different breakdown:
+## Recommended Workflow
 
-- `start` → 10%
-- `research` → 40%
-- `draft` → 75%
-- `revise` → 90%
-- `done` → 100%
+For a long Feishu workflow:
 
-## Status values
+1. Create a parent task with `progress_update`.
+2. Create child tasks only when the workflow has real sub-steps.
+3. If the user wants Feishu visibility, call `progress_pin_card` on the parent task.
+4. Update child tasks as real work progresses.
+5. When waiting on an external call, mark the task as `waiting_external`.
+6. When the external call returns, send a normal `progress_update` and the waiting state clears automatically.
+7. Finish with `stage="done"`, `status="done"`, and `percent=100` on the relevant final task.
 
-- `queued` | `running` | `blocked` | `retrying` | `done` | `failed` | `canceled`
+## Recommended Stages
+
+Use these stages unless the task needs a better domain-specific breakdown:
+
+- `start`
+- `research`
+- `draft`
+- `revise`
+- `done`
+
+## Status Values
+
+- `queued`
+- `running`
+- `blocked`
+- `retrying`
+- `done`
+- `failed`
+- `canceled`
 
 Use `running` by default.
 
-## Tool: progress_update
+## Parent And Child Tasks
 
-**Parameters:**
-- `taskId` (required): stable identifier
-- `label` (required): short user-facing label
-- `percent` (optional): 0-100
-- `stage` (optional): start/research/draft/revise/done
-- `model` (optional): model name
-- `status` (optional): task status
-- `parentTaskId` (optional): parent task for subtasks
+Preferred pattern:
 
-**Example:**
+- parent task for the overall workflow
+- child tasks for meaningful work units
+- child tasks carry most updates
+- parent task is what you pin to Feishu
+
+Important:
+
+- do not manually maintain parent `percent` if child tasks exist
+- do not manually maintain parent `status` if child tasks exist
+- do not manually maintain parent `stage` if child tasks exist
+- use child `weight` when some subtasks matter more than others
+
+Example parent:
+
+```json
+{
+  "taskId": "feishu-report-1",
+  "label": "Preparing report",
+  "stage": "start",
+  "status": "running"
+}
 ```
-taskId="feishu-doc-summary-1", stage="start", label="开始处理文档"
-taskId="feishu-doc-summary-1", stage="research", label="正在读取并分析文档"
-taskId="feishu-doc-summary-1", stage="draft", label="正在整理摘要"
-taskId="feishu-doc-summary-1", stage="done", label="已完成", status="done", percent=100
+
+Example child:
+
+```json
+{
+  "taskId": "feishu-report-1.read-doc",
+  "parentTaskId": "feishu-report-1",
+  "label": "Reading source document",
+  "stage": "research",
+  "status": "running"
+}
 ```
 
-## Tool: progress_get
+## External Wait States
 
-Get current progress for one task.
-- `taskId` (required)
-- `outputMode` (optional): text/compact/json
+When the agent is waiting on an external dependency, do not pretend the task is actively progressing.
 
-## Tool: progress_list
+Use:
 
-List tasks in current conversation.
-- `status` (optional)
-- `outputMode` (optional)
+- `activityState: "waiting_external"`
+- `waitingOn: "<provider-or-tool>"`
 
-## Tool: progress_clear
+Example:
 
-Clear task records.
-- `taskId` (optional)
-- `all` (optional)
+```json
+{
+  "taskId": "feishu-report-1.read-doc",
+  "label": "Waiting for OpenAI response",
+  "status": "running",
+  "activityState": "waiting_external",
+  "waitingOn": "openai"
+}
+```
 
-## Tool: progress_summary
+Good `waitingOn` values:
 
-Generate concise task summary. Use when:
-- user asks "现在进展如何"
-- task was interrupted and needs recovery
+- `openai`
+- `search-api`
+- `feishu`
+- `database`
+- `web-fetch`
 
-## Tool: progress_replay
+When work resumes, send a normal update without `activityState` and without `waitingOn`.
 
-Full event timeline. Use for debugging.
+Example:
 
-## Tool: progress_metrics
+```json
+{
+  "taskId": "feishu-report-1.read-doc",
+  "label": "Analyzing returned content",
+  "status": "running",
+  "stage": "research"
+}
+```
 
-Workflow timing, retries, blocks.
+## Heartbeat And Stale Detection
 
-## Tool: progress_children
+The plugin already supports automatic heartbeat and stale detection.
 
-Direct child tasks of a parent.
+Implications for the agent:
 
-## Tool: progress_tree
+- do not create fake "still working" updates every few seconds
+- do not use heartbeat to advance percent
+- use real updates for real progress
+- use `waiting_external` when the agent is blocked on an external call
 
-Render task hierarchy. Use when workflow is hierarchical.
+The watchdog will then distinguish:
 
-## Tool: progress_conversations
+- active work
+- waiting on external dependency
+- external call slow
+- possibly stalled
 
-List persisted conversation IDs. (Admin/debug)
+## Feishu Card Workflow
 
-## Tool: progress_health
+If the user wants progress visible in Feishu:
 
-Plugin health check. (Admin/debug)
+1. create the parent task
+2. pin the parent task with `progress_pin_card`
+3. continue updating child tasks
+4. let the parent card auto-refresh
 
-## Tool: progress_cleanup
+Example:
 
-Clean expired/empty conversations. (Admin/debug)
+```json
+{
+  "taskId": "feishu-report-1",
+  "receiveId": "chat_id_here",
+  "receiveIdType": "chat_id",
+  "showSummary": true
+}
+```
 
-## Tool: progress_schedule
+Use the parent task for pinned cards unless there is a clear reason to pin a specific child task.
 
-Enable periodic progress updates for long-running tasks.
+## Tool Guidance
 
-**Parameters:**
-- `taskId` (required)
-- `intervalMs` (optional): update interval in milliseconds
-- `mode` (optional): `heartbeat | summary`
-- `enabled` (optional): set to `false` to stop scheduling
+### `progress_update`
 
-**When to use:**
-- Task may run for a noticeable amount of time
-- User would benefit from periodic progress visibility
-- Workflow may otherwise appear stalled
+Use for:
 
-**Mode guidance:**
-- `heartbeat`: Simple keep-alive updates. Use when user just needs reassurance task is active.
-- `summary`: Periodic recap. Use when repeated heartbeats would be too noisy (e.g., Feishu chat).
+- creating a task
+- updating stage, label, status, or percent
+- updating child tasks
+- entering `waiting_external`
+- resuming from `waiting_external`
 
-**Best practices:**
-- Only enable for genuinely long-running tasks
-- Prefer intervals of at least 30-60 seconds
-- Prefer `summary` mode in Feishu to avoid message spam
+Key parameters:
 
-## Tool: progress_unschedule
+- `taskId`
+- `label`
+- `stage`
+- `status`
+- `parentTaskId`
+- `weight`
+- `activityState`
+- `waitingOn`
 
-Stop scheduled progress updates for a task.
+### `progress_pin_card`
 
-**Parameters:**
-- `taskId` (required)
+Use when:
 
-**When to use:**
-- Task is done, failed, or canceled
-- Periodic updates no longer needed
-- User asks to stop automatic reporting
+- the user explicitly asks for a Feishu progress card
+- the task is long enough that external visibility is useful
 
-Note: Scheduled updates stop automatically when task reaches `done`, `failed`, or `canceled`.
+### `progress_refresh_card`
 
-## Feishu-specific guidance
+Use when:
 
-- use stable `taskId` for document workflow
-- document reading = `research`
-- content generation = `draft`
-- refinement = `revise`
-- write-back = update before and after
+- the user explicitly asks to refresh the card
+- you need a manual sync after unusual state changes
 
-**Suggested taskId patterns:**
+### `progress_schedule`
+
+Use sparingly.
+
+In many cases, automatic heartbeat is already enough. Prefer `progress_schedule` only when:
+
+- the task is very long-running
+- periodic summaries are genuinely useful
+- the user explicitly asks for recurring recap-style updates
+
+Prefer:
+
+- `heartbeat` when the user only needs reassurance that work is still alive
+- `summary` when periodic recap is more useful than keep-alive noise
+
+### `progress_summary`
+
+Use when:
+
+- the user asks for current progress
+- the workflow needs a recovery summary after interruption
+
+### `progress_tree`
+
+Use when:
+
+- the workflow is hierarchical
+- the user needs to understand parent/child structure
+
+## Suggested Task ID Patterns
+
 - `feishu-doc-summary-1`
 - `feishu-doc-rewrite-1`
 - `feishu-meeting-note-1`
+- `feishu-report-1`
+- `feishu-report-1.read-doc`
+- `feishu-report-1.write-summary`
 
-**Suggested labels:**
-- `开始处理文档`
-- `正在读取并分析文档`
-- `正在提取关键信息`
-- `正在整理摘要`
-- `正在润色内容`
-- `正在写回文档`
-- `已完成`
+## Suggested Labels
 
-## Best practices
+Keep labels short and user-facing. Examples:
 
-- Use progress tools only for meaningfully multi-step tasks
-- Keep one stable `taskId` for task lifecycle
-- Send returned message after every `progress_update`
-- Prefer concise labels
-- Prefer `progress_summary` for user recap
-- Avoid over-updating for tiny intermediate actions
+- `Starting document review`
+- `Reading source document`
+- `Extracting key decisions`
+- `Drafting summary`
+- `Refining output`
+- `Waiting for OpenAI response`
+- `Writing back to Feishu`
+- `Completed`
+
+## Best Practices
+
+- Prefer parent task + child tasks over one giant flat task.
+- Pin the parent task, not every child task.
+- Use `weight` only when unequal importance is real and obvious.
+- Use `waiting_external` only for genuine external waits.
+- Clear waiting state as soon as real work resumes.
+- Keep labels understandable to the end user, not just the implementer.
+- Use `progress_summary` for recap, not a burst of tiny progress updates.
+
+## Anti-Patterns
+
+Avoid these:
+
+- creating a new `taskId` for every tiny step
+- manually updating the parent when children already exist
+- using heartbeat as fake progress
+- setting `waiting_external` when the agent is actually computing locally
+- over-updating the user with noisy progress messages for tiny intermediate actions
