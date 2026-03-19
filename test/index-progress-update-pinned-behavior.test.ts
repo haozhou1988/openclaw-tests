@@ -207,5 +207,63 @@ describe("progress_update pinned card behavior", () => {
     expect(result.metadata.refreshed).toBe(false);
   });
 
+  it("refreshes pinned parent card when a child task updates", async () => {
+    const api = createMockApi({
+      injectPromptContext: false,
+      feishuAppId: "app-id",
+      feishuAppSecret: "app-secret",
+      persistenceMode: "memory",
+    });
+
+    register(api);
+
+    const updateTool = api._tools.find((t: any) => t.name === "progress_update");
+    const pinTool = api._tools.find((t: any) => t.name === "progress_pin_card");
+    const getTool = api._tools.find((t: any) => t.name === "progress_get");
+
+    const ctx = { conversation: { id: "conv-1" } };
+
+    await updateTool.execute(
+      "1",
+      {
+        taskId: "root-task",
+        label: "Parent task",
+        stage: "start",
+        status: "running",
+      },
+      ctx
+    );
+
+    await pinTool.execute(
+      "2",
+      {
+        taskId: "root-task",
+        receiveId: "chat-1",
+        receiveIdType: "chat_id",
+        showSummary: true,
+      },
+      ctx
+    );
+
+    updateCardMock.mockClear();
+
+    await updateTool.execute(
+      "3",
+      {
+        taskId: "child-task",
+        parentTaskId: "root-task",
+        label: "Child task",
+        stage: "done",
+        status: "done",
+      },
+      ctx
+    );
+
+    const root = await getTool.execute("4", { taskId: "root-task" }, ctx);
+
+    expect(updateCardMock).toHaveBeenCalled();
+    expect(root.content[0].text).toContain("100%");
+  });
+
   // Note: Schedule tests disabled - requires mocking autoProgress
 });

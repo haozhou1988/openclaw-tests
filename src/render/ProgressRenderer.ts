@@ -1,31 +1,10 @@
-export type OutputMode = "text" | "compact" | "json";
+import { progressBar } from "../utils.js";
+import type { OutputMode, ProgressEvent, TaskState } from "../types.js";
+
+export type { OutputMode, ProgressEvent, TaskState } from "../types.js";
 
 export interface RenderOptions {
   mode?: OutputMode;
-}
-
-export interface TaskState {
-  taskId: string;
-  conversationId: string;
-  parentTaskId?: string;
-  label: string;
-  percent?: number;
-  stage?: string;
-  model?: string;
-  status: string;
-  createdAt: number;
-  updatedAt: number;
-  expiresAt?: number;
-  history: ProgressEvent[];
-}
-
-export interface ProgressEvent {
-  ts: number;
-  label: string;
-  percent?: number;
-  stage?: string;
-  model?: string;
-  status?: string;
 }
 
 export class ProgressRenderer {
@@ -78,9 +57,7 @@ export class ProgressRenderer {
   }
 
   private progressBar(percent: number): string {
-    const safe = Math.max(0, Math.min(100, Math.round(percent)));
-    const filled = Math.round(safe / 10);
-    return "█".repeat(filled) + "░".repeat(10 - filled);
+    return progressBar(percent);
   }
 
   renderConversations(conversations: string[], mode: OutputMode = "text"): string | object {

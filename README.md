@@ -144,6 +144,59 @@ The plugin can enable scheduled progress updates for long-running tasks.
 
 ## Usage Examples
 
+### Recommended: Parent + Child Tasks
+
+The recommended workflow is to create one parent task for the overall job, then update child tasks as work progresses.
+
+You only need to update child tasks in most cases. The parent task will automatically derive:
+
+- `percent` from child progress
+- `status` from child states
+- `stage` from the earliest unfinished child stage
+- `label` from a short Chinese summary such as `1/2 子任务已完成，1 个运行中`
+
+Example:
+
+Create the parent task:
+
+```json
+{
+  "taskId": "paper-1",
+  "label": "论文整理",
+  "stage": "start",
+  "status": "running"
+}
+```
+
+Create and update child tasks:
+
+```json
+{
+  "taskId": "paper-1.search",
+  "parentTaskId": "paper-1",
+  "label": "检索资料",
+  "stage": "research",
+  "status": "running"
+}
+```
+
+```json
+{
+  "taskId": "paper-1.outline",
+  "parentTaskId": "paper-1",
+  "label": "整理提纲",
+  "stage": "draft",
+  "status": "running"
+}
+```
+
+Once child tasks advance, the parent task can automatically become something like:
+
+```text
+[research] 1/2 子任务已完成，1 个运行中
+[======>---] 67%
+```
+
 ### Basic Progress Update
 
 ```json

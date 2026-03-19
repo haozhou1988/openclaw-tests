@@ -11,6 +11,12 @@ export interface FeishuPinnedCardRecord {
 export class FeishuPinnedCardStore {
   private records = new Map<string, FeishuPinnedCardRecord>();
 
+  constructor(
+    private adapter?: {
+      healthCheck?(): Promise<boolean>;
+    }
+  ) {}
+
   private key(conversationId: string, taskId: string): string {
     return `${conversationId}::${taskId}`;
   }
@@ -29,8 +35,17 @@ export class FeishuPinnedCardStore {
 
   list(conversationId?: string): FeishuPinnedCardRecord[] {
     const all = Array.from(this.records.values());
-    return conversationId
+    const filtered = conversationId
       ? all.filter((r) => r.conversationId === conversationId)
       : all;
+
+    return filtered.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async healthCheck(): Promise<boolean> {
+    if (typeof this.adapter?.healthCheck === "function") {
+      return this.adapter.healthCheck();
+    }
+    return true;
   }
 }
