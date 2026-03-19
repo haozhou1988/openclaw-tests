@@ -76,6 +76,7 @@ export default function register(api: any) {
     parameters: Type.Object({
       taskId: Type.String(),
       label: Type.String(),
+      weight: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
       percent: Type.Optional(Type.Number()),
       stage: Type.Optional(Type.String()),
       model: Type.Optional(Type.String()),

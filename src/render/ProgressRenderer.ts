@@ -15,6 +15,7 @@ export class ProgressRenderer {
       return {
         taskId: task.taskId,
         label: task.label,
+        weight: task.weight,
         stage: task.stage,
         status: task.status,
         percent: task.percent,
@@ -28,6 +29,7 @@ export class ProgressRenderer {
         task.taskId,
         task.stage ? `stage=${task.stage}` : "",
         `status=${task.status}`,
+        task.weight !== undefined ? `weight=${task.weight}` : "",
         task.percent !== undefined ? `percent=${task.percent}` : "",
         `label=${task.label}`,
       ].filter(Boolean);

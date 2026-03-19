@@ -35,6 +35,39 @@ describe("ProgressManager auto percent", () => {
     expect(root?.label).toBe("1/2 子任务已完成，1 个运行中");
   });
 
+  it("derives parent percent from weighted child tasks", async () => {
+    const manager = new ProgressManager();
+
+    await manager.updateTask("conv-1", {
+      taskId: "root",
+      label: "Weighted workflow",
+      stage: "start",
+      status: "running",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-1",
+      parentTaskId: "root",
+      label: "Small completed task",
+      weight: 1,
+      stage: "done",
+      status: "done",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-2",
+      parentTaskId: "root",
+      label: "Heavy research task",
+      weight: 3,
+      stage: "research",
+      status: "running",
+    });
+
+    const root = await manager.getTask("conv-1", "root");
+
+    expect(root?.percent).toBe(50);
+  });
+
   it("uses event history as a fallback when no stage or percent is provided", async () => {
     const manager = new ProgressManager();
 

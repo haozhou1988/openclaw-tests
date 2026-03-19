@@ -23,6 +23,7 @@ export interface TaskState {
   conversationId: string;
   parentTaskId?: string;
   label: string;
+  weight?: number;
   percent?: number;
   stage?: string;
   model?: string;
@@ -45,6 +46,7 @@ export interface PluginConfig {
 export interface UpdateProgressInput {
   taskId: string;
   label: string;
+  weight?: number;
   percent?: number;
   stage?: string;
   model?: string;
