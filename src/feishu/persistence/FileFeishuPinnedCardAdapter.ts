@@ -35,23 +35,33 @@ export class FileFeishuPinnedCardAdapter implements FeishuPinnedCardPersistenceA
     await fs.rename(temp, this.filePath);
   }
 
-  // Legacy methods - not used with new composite key design
-  async loadConversation(_conversationId: string): Promise<FeishuPinnedCardRecordMap> {
-    return this.loadAll();
+  async loadConversation(conversationId: string): Promise<FeishuPinnedCardRecordMap> {
+    const all = await this.loadAll();
+    return Object.fromEntries(
+      Object.entries(all).filter(([, record]) => record.conversationId === conversationId)
+    );
   }
 
-  async saveConversation(_conversationId: string, records: FeishuPinnedCardRecordMap): Promise<void> {
+  async saveConversation(conversationId: string, records: FeishuPinnedCardRecordMap): Promise<void> {
     const existing = await this.loadAll();
-    const merged = { ...existing, ...records };
+    const retained = Object.fromEntries(
+      Object.entries(existing).filter(([, record]) => record.conversationId !== conversationId)
+    );
+    const merged = { ...retained, ...records };
     await this.saveAll(merged);
   }
 
-  async deleteConversation(_conversationId: string): Promise<void> {
-    await this.saveAll({});
+  async deleteConversation(conversationId: string): Promise<void> {
+    const existing = await this.loadAll();
+    const retained = Object.fromEntries(
+      Object.entries(existing).filter(([, record]) => record.conversationId !== conversationId)
+    );
+    await this.saveAll(retained);
   }
 
   async listConversations(): Promise<string[]> {
-    return ["global"];
+    const all = await this.loadAll();
+    return Array.from(new Set(Object.values(all).map((record) => record.conversationId))).sort();
   }
 
   async healthCheck(): Promise<boolean> {

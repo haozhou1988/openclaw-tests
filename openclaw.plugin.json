@@ -1,7 +1,7 @@
 {
   "id": "progress-notifier",
   "name": "Progress Notifier",
-  "description": "Task-based staged progress notifications for long-running agent tasks",
+  "description": "Observability for long-running agent tasks with progress, watchdog, and Feishu visibility",
   "version": "0.3.0",
   "configSchema": {
     "type": "object",
@@ -41,6 +41,19 @@
         "default": 180000
       },
       "autoHeartbeatOnProgress": {
+        "type": "boolean",
+        "default": true
+      },
+      "enableFeishuAlerts": {
+        "type": "boolean",
+        "default": false
+      },
+      "alertCooldownMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "default": 300000
+      },
+      "restoreStateOnStartup": {
         "type": "boolean",
         "default": true
       },

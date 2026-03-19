@@ -5,6 +5,7 @@ import { WorkflowAnalytics } from "./analytics/WorkflowAnalytics.js";
 import { TaskTreeManager } from "./tree/TaskTreeManager.js";
 import { TaskScheduler } from "./scheduler/TaskScheduler.js";
 import type { ActivityState, OutputMode } from "./types.js";
+import { getTaskWatchdog } from "./utils.js";
 
 export interface UpdateProgressInput {
   taskId: string;
@@ -260,13 +261,110 @@ export class ProgressManager {
     return task.stage ?? this.inferStageFromPercent(task.percent);
   }
 
-  private summarizeChildrenLabel(parent: TaskState, tasks: TaskRecordMap): string {
+  private descendantTasks(tasks: TaskRecordMap, parentTaskId: string): TaskState[] {
+    const descendants: TaskState[] = [];
+    const queue = this.childTasks(tasks, parentTaskId);
+
+    while (queue.length > 0) {
+      const task = queue.shift();
+      if (!task) continue;
+      descendants.push(task);
+      queue.push(...this.childTasks(tasks, task.taskId));
+    }
+
+    return descendants;
+  }
+
+  private findDominantWaitingChild(
+    parent: TaskState,
+    tasks: TaskRecordMap,
+    now: number
+  ): { state: "waiting_external" | "waiting_external_slow"; waitingOn?: string } | undefined {
+    const candidates = this.descendantTasks(tasks, parent.taskId)
+      .filter((task) => !["done", "failed", "canceled"].includes(task.status))
+      .map((task) => ({
+        task,
+        watchdog: getTaskWatchdog(task, this.staleAfterMs, now),
+      }))
+      .filter(
+        (
+          entry
+        ): entry is {
+          task: TaskState;
+          watchdog: ReturnType<typeof getTaskWatchdog> & {
+            state: "waiting_external" | "waiting_external_slow";
+          };
+        } =>
+          entry.watchdog.state === "waiting_external" ||
+          entry.watchdog.state === "waiting_external_slow"
+      )
+      .sort((a, b) => {
+        const priority = (state: "waiting_external" | "waiting_external_slow") =>
+          state === "waiting_external_slow" ? 0 : 1;
+        const byPriority =
+          priority(a.watchdog.state) - priority(b.watchdog.state);
+        if (byPriority !== 0) return byPriority;
+        return b.task.updatedAt - a.task.updatedAt;
+      });
+
+    if (candidates.length === 0) return undefined;
+    return {
+      state: candidates[0].watchdog.state,
+      waitingOn: candidates[0].watchdog.waitingOn,
+    };
+  }
+
+  private summarizeChildrenLabel(parent: TaskState, tasks: TaskRecordMap, now: number): string {
     const children = this.childTasks(tasks, parent.taskId);
     if (children.length === 0) {
       return parent.label;
     }
 
+    const dominantWaitingChild = this.findDominantWaitingChild(parent, tasks, now);
+    if (dominantWaitingChild?.state === "waiting_external_slow") {
+      return `external call slow (${dominantWaitingChild.waitingOn ?? "external"})`;
+    }
+    if (dominantWaitingChild?.state === "waiting_external") {
+      return `waiting on ${dominantWaitingChild.waitingOn ?? "external"}`;
+    }
+
     const total = children.length;
+    {
+      const usesWeightedProgress = children.some(
+        (child) => (this.normalizeWeight(child.weight) ?? 1) !== 1
+      );
+      const derivedPercent = this.computeDerivedPercent(parent.taskId, tasks);
+      const counts = {
+        done: children.filter((child) => child.status === "done").length,
+        running: children.filter((child) => child.status === "running").length,
+        blocked: children.filter((child) => child.status === "blocked").length,
+        retrying: children.filter((child) => child.status === "retrying").length,
+        failed: children.filter((child) => child.status === "failed").length,
+        queued: children.filter((child) => child.status === "queued").length,
+        canceled: children.filter((child) => child.status === "canceled").length,
+      };
+
+      if (counts.done === total) {
+        return usesWeightedProgress && derivedPercent !== undefined
+          ? `${derivedPercent}% complete (weighted), all ${total} child tasks complete`
+          : `All ${total} child tasks complete`;
+      }
+
+      const parts = [`${counts.done}/${total} child tasks complete`];
+
+      if (counts.running > 0) parts.push(`${counts.running} running`);
+      if (counts.blocked > 0) parts.push(`${counts.blocked} blocked`);
+      if (counts.retrying > 0) parts.push(`${counts.retrying} retrying`);
+      if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+      if (counts.queued > 0) parts.push(`${counts.queued} queued`);
+      if (counts.canceled > 0) parts.push(`${counts.canceled} canceled`);
+
+      if (usesWeightedProgress && derivedPercent !== undefined) {
+        parts.unshift(`${derivedPercent}% complete (weighted)`);
+      }
+
+      return parts.join(", ");
+    }
     const usesWeightedProgress = children.some((child) => (this.normalizeWeight(child.weight) ?? 1) !== 1);
     const derivedPercent = this.computeDerivedPercent(parent.taskId, tasks);
     const counts = {
@@ -312,7 +410,7 @@ export class ProgressManager {
       const nextPercent = derivedPercent ?? parent.percent;
       const nextStatus = this.computeDerivedStatus(parent.taskId, tasks) ?? (parent.status as ProgressStatus);
       const nextStage = this.computeDerivedStage(parent.taskId, tasks) ?? parent.stage;
-      const nextLabel = this.summarizeChildrenLabel(parent, tasks);
+      const nextLabel = this.summarizeChildrenLabel(parent, tasks, now);
 
       if (
         (nextPercent !== undefined && nextPercent !== parent.percent) ||
@@ -355,9 +453,10 @@ export class ProgressManager {
       const parent = tasks[currentParentId];
       if (!parent) break;
 
+      const nextLabel = this.summarizeChildrenLabel(parent, tasks, now);
       const event: ProgressEvent = {
         ts: now,
-        label: parent.label,
+        label: nextLabel,
         percent: parent.percent,
         stage: parent.stage,
         model: parent.model,
@@ -369,6 +468,7 @@ export class ProgressManager {
 
       tasks[currentParentId] = {
         ...parent,
+        label: nextLabel,
         updatedAt: now,
         lastHeartbeatAt: now,
         expiresAt: now + this.ttlMs,

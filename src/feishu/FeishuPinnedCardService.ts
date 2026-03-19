@@ -1,8 +1,10 @@
 import type { ProgressManager } from "../ProgressManager.js";
 import type { TaskState } from "../types.js";
+import { formatElapsedMs, getTaskWatchdog } from "../utils.js";
 import { FeishuCardRenderer } from "./FeishuCardRenderer.js";
 import { FeishuCardPusher } from "./FeishuCardPusher.js";
 import { FeishuPinnedCardStore } from "./FeishuPinnedCardStore.js";
+import type { FeishuPinnedCardRecord } from "./types.js";
 
 export interface PinCardArgs {
   conversationId: string;
@@ -12,12 +14,19 @@ export interface PinCardArgs {
   showSummary?: boolean;
 }
 
+export interface FeishuPinnedCardServiceConfig {
+  staleAfterMs?: number;
+  enableAlerts?: boolean;
+  alertCooldownMs?: number;
+}
+
 export class FeishuPinnedCardService {
   constructor(
     private manager: ProgressManager,
     private renderer: FeishuCardRenderer,
     private pusher: FeishuCardPusher,
-    private store: FeishuPinnedCardStore
+    private store: FeishuPinnedCardStore,
+    private config: FeishuPinnedCardServiceConfig = {}
   ) {}
 
   async pin(args: PinCardArgs): Promise<{ messageId: string; created: boolean }> {
@@ -27,7 +36,6 @@ export class FeishuPinnedCardService {
     }
 
     const existing = this.store.get(args.conversationId, args.taskId);
-    // Build summary from task data (since summarizeTask method doesn't exist)
     const summary = args.showSummary
       ? this.buildSummaryText(task, args.taskId)
       : undefined;
@@ -43,7 +51,7 @@ export class FeishuPinnedCardService {
         card,
       });
 
-      this.store.set({
+      await this.store.set({
         ...existing,
         updatedAt: Date.now(),
       });
@@ -54,20 +62,21 @@ export class FeishuPinnedCardService {
       };
     }
 
+    const now = Date.now();
     const messageId = await this.pusher.sendCard({
       receiveId: args.receiveId,
       receiveIdType: args.receiveIdType ?? "chat_id",
       card,
     });
 
-    this.store.set({
+    await this.store.set({
       conversationId: args.conversationId,
       taskId: args.taskId,
       messageId,
       receiveId: args.receiveId,
       receiveIdType: args.receiveIdType ?? "chat_id",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     });
 
     return {
@@ -97,11 +106,15 @@ export class FeishuPinnedCardService {
       card,
     });
 
-    this.store.set({
-      ...record,
-      updatedAt: Date.now(),
+    const updatedRecord = await this.syncAlertState({
+      record: {
+        ...record,
+        updatedAt: Date.now(),
+      },
+      task,
     });
 
+    await this.store.set(updatedRecord);
     return true;
   }
 
@@ -109,7 +122,7 @@ export class FeishuPinnedCardService {
     const record = this.store.get(conversationId, taskId);
     if (!record) return false;
 
-    this.store.delete(conversationId, taskId);
+    await this.store.delete(conversationId, taskId);
     return true;
   }
 
@@ -124,5 +137,72 @@ export class FeishuPinnedCardService {
   private buildSummaryText(task: TaskState, fallbackTaskId: string): string {
     const progressText = task.percent !== undefined ? `${task.percent}%` : "N/A";
     return `${task.label || fallbackTaskId}: ${task.status} (${progressText})`;
+  }
+
+  private async syncAlertState(args: {
+    record: FeishuPinnedCardRecord;
+    task: TaskState;
+  }): Promise<FeishuPinnedCardRecord> {
+    const { record, task } = args;
+    const nextAlertState = this.pickAlertState(task);
+
+    if (!nextAlertState) {
+      return {
+        ...record,
+        lastAlertState: undefined,
+      };
+    }
+
+    if (!this.config.enableAlerts) {
+      return record;
+    }
+
+    const now = Date.now();
+    const cooldownMs = this.config.alertCooldownMs ?? 300000;
+    const canAlert =
+      record.lastAlertState !== nextAlertState &&
+      (record.lastAlertAt === undefined || now - record.lastAlertAt >= cooldownMs);
+
+    if (!canAlert) {
+      return record;
+    }
+
+    await this.pusher.sendText({
+      receiveId: record.receiveId,
+      receiveIdType: record.receiveIdType,
+      text: this.buildAlertText(task, nextAlertState),
+    });
+
+    return {
+      ...record,
+      lastAlertState: nextAlertState,
+      lastAlertAt: now,
+    };
+  }
+
+  private pickAlertState(task: TaskState): FeishuPinnedCardRecord["lastAlertState"] {
+    const watchdog = getTaskWatchdog(task, this.config.staleAfterMs);
+    if (watchdog.state === "stale") return "stale";
+    if (watchdog.state === "waiting_external_slow") return "waiting_external_slow";
+    return undefined;
+  }
+
+  private buildAlertText(
+    task: TaskState,
+    alertState: NonNullable<FeishuPinnedCardRecord["lastAlertState"]>
+  ): string {
+    const watchdog = getTaskWatchdog(task, this.config.staleAfterMs);
+
+    if (alertState === "waiting_external_slow") {
+      return `External call slow: waiting on ${watchdog.waitingOn ?? "external"}${
+        watchdog.waitingForMs !== undefined
+          ? ` for ${formatElapsedMs(watchdog.waitingForMs)}`
+          : ""
+      }`;
+    }
+
+    return `Possibly stalled: no real activity for ${formatElapsedMs(
+      watchdog.inactiveForMs
+    )}`;
   }
 }

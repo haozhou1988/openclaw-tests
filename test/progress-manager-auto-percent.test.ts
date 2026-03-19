@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProgressManager } from "../src/ProgressManager.js";
 
-describe("ProgressManager auto percent", () => {
-  it("derives parent percent from child tasks", async () => {
+describe("ProgressManager auto aggregation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-19T00:00:00Z"));
+  });
+
+  it("derives parent percent and label from child tasks", async () => {
     const manager = new ProgressManager();
 
     await manager.updateTask("conv-1", {
@@ -32,7 +37,7 @@ describe("ProgressManager auto percent", () => {
 
     expect(root?.percent).toBe(67);
     expect(root?.stage).toBe("research");
-    expect(root?.label).toBe("1/2 子任务已完成，1 个运行中");
+    expect(root?.label).toBe("1/2 child tasks complete, 1 running");
   });
 
   it("derives parent percent from weighted child tasks", async () => {
@@ -66,7 +71,7 @@ describe("ProgressManager auto percent", () => {
     const root = await manager.getTask("conv-1", "root");
 
     expect(root?.percent).toBe(50);
-    expect(root?.label).toBe("已完成 50%（按权重），1/2 子任务已完成，1 个运行中");
+    expect(root?.label).toBe("50% complete (weighted), 1/2 child tasks complete, 1 running");
   });
 
   it("uses event history as a fallback when no stage or percent is provided", async () => {
@@ -118,7 +123,7 @@ describe("ProgressManager auto percent", () => {
     expect(root?.status).toBe("done");
     expect(root?.percent).toBe(100);
     expect(root?.stage).toBe("done");
-    expect(root?.label).toBe("全部 2 个子任务已完成");
+    expect(root?.label).toBe("All 2 child tasks complete");
   });
 
   it("aggregates parent status to blocked or failed based on child states", async () => {
@@ -140,7 +145,7 @@ describe("ProgressManager auto percent", () => {
 
     let root = await manager.getTask("conv-1", "root");
     expect(root?.status).toBe("blocked");
-    expect(root?.label).toBe("0/1 子任务已完成，1 个阻塞中");
+    expect(root?.label).toBe("0/1 child tasks complete, 1 blocked");
 
     await manager.updateTask("conv-1", {
       taskId: "child-2",
@@ -152,7 +157,7 @@ describe("ProgressManager auto percent", () => {
 
     root = await manager.getTask("conv-1", "root");
     expect(root?.status).toBe("failed");
-    expect(root?.label).toBe("0/2 子任务已完成，1 个阻塞中，1 个失败");
+    expect(root?.label).toBe("0/2 child tasks complete, 1 blocked, 1 failed");
   });
 
   it("keeps parent stage at the earliest unfinished child stage", async () => {
@@ -184,5 +189,98 @@ describe("ProgressManager auto percent", () => {
     const root = await manager.getTask("conv-1", "root");
 
     expect(root?.stage).toBe("research");
+  });
+
+  it("surfaces the dominant external wait from descendants on the parent label", async () => {
+    const manager = new ProgressManager(undefined, { staleAfterMs: 5000 });
+
+    await manager.updateTask("conv-1", {
+      taskId: "root",
+      label: "Overall workflow",
+      status: "running",
+      stage: "start",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-1",
+      parentTaskId: "root",
+      label: "Waiting on search",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "search-api",
+    });
+
+    const root = await manager.getTask("conv-1", "root");
+    expect(root?.label).toBe("waiting on search-api");
+  });
+
+  it("prioritizes slow external wait over a normal waiting child", async () => {
+    const manager = new ProgressManager(undefined, { staleAfterMs: 5000 });
+
+    await manager.updateTask("conv-1", {
+      taskId: "root",
+      label: "Overall workflow",
+      status: "running",
+      stage: "start",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-1",
+      parentTaskId: "root",
+      label: "Waiting on search",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "search-api",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-2",
+      parentTaskId: "root",
+      label: "Waiting on OpenAI",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "openai",
+    });
+
+    vi.advanceTimersByTime(6000);
+    await manager.touchTaskHeartbeat("conv-1", "child-2");
+
+    const root = await manager.getTask("conv-1", "root");
+    expect(root?.label).toBe("external call slow (openai)");
+  });
+
+  it("clears the parent waiting label when child work resumes", async () => {
+    const manager = new ProgressManager(undefined, { staleAfterMs: 5000 });
+
+    await manager.updateTask("conv-1", {
+      taskId: "root",
+      label: "Overall workflow",
+      status: "running",
+      stage: "start",
+    });
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-1",
+      parentTaskId: "root",
+      label: "Waiting on OpenAI",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "openai",
+      stage: "research",
+    });
+
+    let root = await manager.getTask("conv-1", "root");
+    expect(root?.label).toBe("waiting on openai");
+
+    await manager.updateTask("conv-1", {
+      taskId: "child-1",
+      parentTaskId: "root",
+      label: "Continuing draft",
+      status: "running",
+      stage: "draft",
+    });
+
+    root = await manager.getTask("conv-1", "root");
+    expect(root?.label).toBe("0/1 child tasks complete, 1 running");
   });
 });

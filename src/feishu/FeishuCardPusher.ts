@@ -15,6 +15,12 @@ export interface UpdateCardArgs {
   card: Record<string, any>;
 }
 
+export interface SendTextArgs {
+  receiveId: string;
+  receiveIdType?: "open_id" | "user_id" | "union_id" | "chat_id" | "email";
+  text: string;
+}
+
 export class FeishuCardPusher {
   private baseUrl: string;
 
@@ -69,6 +75,33 @@ export class FeishuCardPusher {
     const data = await resp.json();
     if (!resp.ok || data.code !== 0) {
       throw new Error(`Failed to send card: ${JSON.stringify(data)}`);
+    }
+
+    return data.data.message_id;
+  }
+
+  async sendText(args: SendTextArgs): Promise<string> {
+    const token = await this.getTenantAccessToken();
+
+    const resp = await fetch(
+      `${this.baseUrl}/im/v1/messages?receive_id_type=${args.receiveIdType ?? "chat_id"}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify({
+          receive_id: args.receiveId,
+          msg_type: "text",
+          content: JSON.stringify({ text: args.text }),
+        }),
+      }
+    );
+
+    const data = await resp.json();
+    if (!resp.ok || data.code !== 0) {
+      throw new Error(`Failed to send text: ${JSON.stringify(data)}`);
     }
 
     return data.data.message_id;

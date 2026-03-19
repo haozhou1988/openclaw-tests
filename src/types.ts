@@ -9,6 +9,7 @@ export type ProgressStatus =
 
 export type OutputMode = "text" | "compact" | "json";
 export type ActivityState = "working" | "waiting_external";
+export type ScheduleMode = "heartbeat" | "summary";
 
 export interface ProgressEvent {
   ts: number;
@@ -50,8 +51,16 @@ export interface PluginConfig {
   defaultStages?: string[];
   persistenceMode?: "memory" | "file";
   persistenceDir?: string;
+  enableScheduledUpdates?: boolean;
+  defaultUpdateIntervalMs?: number;
+  pushScheduledMessages?: boolean;
+  feishuAppId?: string;
+  feishuAppSecret?: string;
   staleAfterMs?: number;
   autoHeartbeatOnProgress?: boolean;
+  enableFeishuAlerts?: boolean;
+  alertCooldownMs?: number;
+  restoreStateOnStartup?: boolean;
 }
 
 export interface UpdateProgressInput {
@@ -123,8 +132,6 @@ export interface CleanupInput {
   removeEmptyConversations?: boolean;
 }
 
-export type ScheduleMode = "heartbeat" | "summary";
-
 export interface ScheduleInput {
   taskId: string;
   intervalMs?: number;
@@ -147,22 +154,6 @@ export interface ScheduledTaskInfo {
 export interface SchedulerConfig {
   enableScheduledUpdates?: boolean;
   defaultUpdateIntervalMs?: number;
-}
-
-export interface PluginConfig {
-  ttlMs?: number;
-  injectPromptContext?: boolean;
-  promptContextLimit?: number;
-  defaultStages?: string[];
-  persistenceMode?: "memory" | "file";
-  persistenceDir?: string;
-  enableScheduledUpdates?: boolean;
-  defaultUpdateIntervalMs?: number;
-  pushScheduledMessages?: boolean;
-  feishuAppId?: string;
-  feishuAppSecret?: string;
-  staleAfterMs?: number;
-  autoHeartbeatOnProgress?: boolean;
 }
 
 export interface PinCardInput {

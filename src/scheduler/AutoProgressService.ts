@@ -7,7 +7,12 @@ export class AutoProgressService {
   constructor(
     private manager: ProgressManager,
     private scheduler: TaskScheduler,
-    private pusher?: ProgressMessagePusher
+    private pusher?: ProgressMessagePusher,
+    private onTaskTick?: (args: {
+      conversationId: string;
+      taskId: string;
+      mode: ScheduleMode;
+    }) => Promise<void>
   ) {}
 
   async pushIfPossible(args: {
@@ -63,6 +68,7 @@ export class AutoProgressService {
             text,
             mode,
           });
+          await this.onTaskTick?.({ conversationId, taskId, mode });
 
           return;
         }
@@ -93,6 +99,7 @@ export class AutoProgressService {
             text,
             mode,
           });
+          await this.onTaskTick?.({ conversationId, taskId, mode });
         }
       }
     );

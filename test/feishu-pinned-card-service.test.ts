@@ -1,19 +1,22 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FeishuPinnedCardService } from "../src/feishu/FeishuPinnedCardService.js";
 import { FeishuPinnedCardStore } from "../src/feishu/FeishuPinnedCardStore.js";
 import { MemoryFeishuPinnedCardAdapter } from "../src/feishu/persistence/MemoryFeishuPinnedCardAdapter.js";
 
-function buildTask(status = "running") {
+function buildTask(overrides: Record<string, any> = {}) {
   return {
     taskId: "paper-1",
     conversationId: "conv-1",
-    label: "正在整理摘要",
+    label: "Drafting summary",
     percent: 75,
     stage: "draft",
-    status,
+    status: "running",
     createdAt: 1,
     updatedAt: 2,
+    lastActivityAt: 2,
+    lastHeartbeatAt: undefined,
     history: [],
+    ...overrides,
   };
 }
 
@@ -25,23 +28,33 @@ describe("FeishuPinnedCardService", () => {
   let service: FeishuPinnedCardService;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-19T00:00:00Z"));
+
     manager = {
       getTask: vi.fn(async () => buildTask()),
-      summarizeTask: vi.fn(async () => "任务摘要"),
-      metricsForTask: vi.fn(async () => ({ totalDurationMs: 1000, updateCount: 2, retryCount: 0, blockCount: 0 })),
+      summarizeTask: vi.fn(async () => "Task summary"),
+      metricsForTask: vi.fn(
+        async () => ({ totalDurationMs: 1000, updateCount: 2, retryCount: 0, blockCount: 0 })
+      ),
       renderMetrics: vi.fn(() => "duration=1s | updates=2"),
       childrenOfTask: vi.fn(async () => []),
     };
 
     renderer = {
       renderTaskCard: vi.fn(() => ({
-        card: { schema: "2.0", header: { title: { content: "Workflow Progress" } }, body: { elements: [] } },
+        card: {
+          schema: "2.0",
+          header: { title: { content: "Workflow Progress" } },
+          body: { elements: [] },
+        },
       })),
     };
 
     pusher = {
       sendCard: vi.fn(async () => "msg-123"),
       updateCard: vi.fn(async () => {}),
+      sendText: vi.fn(async () => "alert-123"),
     };
 
     store = new FeishuPinnedCardStore(new MemoryFeishuPinnedCardAdapter());
@@ -63,7 +76,7 @@ describe("FeishuPinnedCardService", () => {
     expect(pusher.updateCard).not.toHaveBeenCalled();
   });
 
-  it("pin() updates existing card when binding already exists", async () => {
+  it("pin() updates an existing card when binding already exists", async () => {
     await store.set({
       conversationId: "conv-1",
       taskId: "paper-1",
@@ -121,7 +134,7 @@ describe("FeishuPinnedCardService", () => {
     });
 
     const removed = await service.unpin("conv-1", "paper-1");
-    const record = await store.get("conv-1", "paper-1");
+    const record = store.get("conv-1", "paper-1");
 
     expect(removed).toBe(true);
     expect(record).toBeUndefined();
@@ -139,5 +152,115 @@ describe("FeishuPinnedCardService", () => {
     await expect(
       brokenService.pin({ conversationId: "conv-1", taskId: "missing-task", receiveId: "chat-1" })
     ).rejects.toThrow("Task not found");
+  });
+
+  it("sends one proactive alert when a task enters waiting_external_slow", async () => {
+    await store.set({
+      conversationId: "conv-1",
+      taskId: "paper-1",
+      messageId: "msg-existing",
+      receiveId: "chat-1",
+      receiveIdType: "chat_id",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    manager.getTask.mockResolvedValueOnce(
+      buildTask({
+        label: "Waiting for OpenAI",
+        activityState: "waiting_external",
+        waitingOn: "openai",
+        externalCallStartedAt: Date.now() - 6000,
+        lastActivityAt: Date.now() - 6000,
+      })
+    );
+
+    service = new FeishuPinnedCardService(manager, renderer, pusher, store, {
+      staleAfterMs: 5000,
+      enableAlerts: true,
+      alertCooldownMs: 1000,
+    });
+
+    await service.refresh("conv-1", "paper-1", true);
+    await service.refresh("conv-1", "paper-1", true);
+
+    expect(pusher.sendText).toHaveBeenCalledTimes(1);
+    expect(pusher.sendText.mock.calls[0][0].text).toContain("External call slow: waiting on openai");
+  });
+
+  it("sends one proactive alert when a task becomes stale", async () => {
+    await store.set({
+      conversationId: "conv-1",
+      taskId: "paper-1",
+      messageId: "msg-existing",
+      receiveId: "chat-1",
+      receiveIdType: "chat_id",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    manager.getTask.mockResolvedValueOnce(
+      buildTask({
+        label: "Quiet task",
+        lastActivityAt: Date.now() - 6000,
+        updatedAt: Date.now() - 1000,
+      })
+    );
+
+    service = new FeishuPinnedCardService(manager, renderer, pusher, store, {
+      staleAfterMs: 5000,
+      enableAlerts: true,
+      alertCooldownMs: 1000,
+    });
+
+    await service.refresh("conv-1", "paper-1", true);
+
+    expect(pusher.sendText).toHaveBeenCalledTimes(1);
+    expect(pusher.sendText.mock.calls[0][0].text).toContain("Possibly stalled: no real activity");
+  });
+
+  it("re-alerts after recovery and a new severe state transition", async () => {
+    await store.set({
+      conversationId: "conv-1",
+      taskId: "paper-1",
+      messageId: "msg-existing",
+      receiveId: "chat-1",
+      receiveIdType: "chat_id",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const waitingTask = buildTask({
+      label: "Waiting for OpenAI",
+      activityState: "waiting_external",
+      waitingOn: "openai",
+      externalCallStartedAt: Date.now() - 6000,
+      lastActivityAt: Date.now() - 6000,
+    });
+    const recoveredTask = buildTask({
+      label: "Back to work",
+      activityState: undefined,
+      waitingOn: undefined,
+      externalCallStartedAt: undefined,
+      lastActivityAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    manager.getTask
+      .mockResolvedValueOnce(waitingTask)
+      .mockResolvedValueOnce(recoveredTask)
+      .mockResolvedValueOnce(waitingTask);
+
+    service = new FeishuPinnedCardService(manager, renderer, pusher, store, {
+      staleAfterMs: 5000,
+      enableAlerts: true,
+      alertCooldownMs: 0,
+    });
+
+    await service.refresh("conv-1", "paper-1", true);
+    await service.refresh("conv-1", "paper-1", true);
+    await service.refresh("conv-1", "paper-1", true);
+
+    expect(pusher.sendText).toHaveBeenCalledTimes(2);
   });
 });

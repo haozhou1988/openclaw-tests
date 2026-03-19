@@ -8,7 +8,12 @@ import { FeishuCardRenderer } from "./feishu/FeishuCardRenderer.js";
 import { FeishuCardPusher } from "./feishu/FeishuCardPusher.js";
 import { FeishuPinnedCardStore } from "./feishu/FeishuPinnedCardStore.js";
 import { FeishuPinnedCardService } from "./feishu/FeishuPinnedCardService.js";
+import { FileAdapter } from "./persistence/FileAdapter.js";
+import { MemoryAdapter } from "./persistence/PersistenceAdapter.js";
+import { FileFeishuPinnedCardAdapter } from "./feishu/persistence/FileFeishuPinnedCardAdapter.js";
+import { MemoryFeishuPinnedCardAdapter } from "./feishu/persistence/MemoryFeishuPinnedCardAdapter.js";
 import type { ProgressStatus } from "./state/TaskStateMachine.js";
+import path from "node:path";
 
 export default function register(api: any) {
   api.logger.info("[progress-notifier] register() called");
@@ -25,6 +30,8 @@ export default function register(api: any) {
     defaultStages: pluginConfig.defaultStages ?? ["start", "research", "draft", "done"],
     injectPromptContext: pluginConfig.injectPromptContext ?? true,
     promptContextLimit: pluginConfig.promptContextLimit ?? 2,
+    persistenceMode: pluginConfig.persistenceMode ?? "memory",
+    persistenceDir: pluginConfig.persistenceDir ?? ".progress-store",
     enableScheduledUpdates: pluginConfig.enableScheduledUpdates ?? false,
     defaultUpdateIntervalMs: pluginConfig.defaultUpdateIntervalMs ?? 60000,
     pushScheduledMessages: pluginConfig.pushScheduledMessages ?? true,
@@ -32,9 +39,17 @@ export default function register(api: any) {
     feishuAppSecret: pluginConfig.feishuAppSecret,
     staleAfterMs: pluginConfig.staleAfterMs ?? 180000,
     autoHeartbeatOnProgress: pluginConfig.autoHeartbeatOnProgress ?? true,
+    enableFeishuAlerts: pluginConfig.enableFeishuAlerts ?? false,
+    alertCooldownMs: pluginConfig.alertCooldownMs ?? 300000,
+    restoreStateOnStartup: pluginConfig.restoreStateOnStartup ?? true,
   };
 
-  const manager = new ProgressManager(undefined, config);
+  const persistenceBaseDir = path.resolve(config.persistenceDir);
+  const taskAdapter =
+    config.persistenceMode === "file"
+      ? new FileAdapter(persistenceBaseDir)
+      : new MemoryAdapter();
+  const manager = new ProgressManager(taskAdapter, config);
 
   const scheduler = new TaskScheduler();
 
@@ -43,10 +58,11 @@ export default function register(api: any) {
       ? new ApiProgressMessagePusher(api)
       : new NoopProgressMessagePusher();
 
-  const autoProgress = new AutoProgressService(manager, scheduler, pusher);
-
-  // Feishu pinned card service
-  const feishuPinnedCardStore = new FeishuPinnedCardStore();
+  const feishuPinnedCardStore = new FeishuPinnedCardStore(
+    config.persistenceMode === "file"
+      ? new FileFeishuPinnedCardAdapter(persistenceBaseDir)
+      : new MemoryFeishuPinnedCardAdapter()
+  );
   const feishuPinnedCardService =
     config.feishuAppId && config.feishuAppSecret
       ? new FeishuPinnedCardService(
@@ -56,9 +72,88 @@ export default function register(api: any) {
             appId: config.feishuAppId,
             appSecret: config.feishuAppSecret,
           }),
-          feishuPinnedCardStore
+          feishuPinnedCardStore,
+          {
+            staleAfterMs: config.staleAfterMs,
+            enableAlerts: config.enableFeishuAlerts,
+            alertCooldownMs: config.alertCooldownMs,
+          }
         )
       : null;
+
+  async function syncPinnedCards(conversationId: string, taskId: string): Promise<{
+    pinned: boolean;
+    refreshed: boolean;
+    messageId?: string;
+  }> {
+    if (!feishuPinnedCardService) {
+      return { pinned: false, refreshed: false };
+    }
+
+    const pinned = feishuPinnedCardService.get(conversationId, taskId);
+    let refreshed = false;
+
+    if (pinned) {
+      try {
+        refreshed = await feishuPinnedCardService.refresh(conversationId, taskId, true);
+      } catch (err) {
+        api.logger?.info?.(
+          `[progress-notifier] failed to refresh Feishu card for ${taskId}: ${String(err)}`
+        );
+      }
+    }
+
+    const ancestors = await manager.ancestorsOfTask(conversationId, taskId);
+    for (const ancestor of ancestors) {
+      if (!feishuPinnedCardService.get(conversationId, ancestor.taskId)) {
+        continue;
+      }
+
+      try {
+        await feishuPinnedCardService.refresh(conversationId, ancestor.taskId, true);
+      } catch (err) {
+        api.logger?.info?.(
+          `[progress-notifier] failed to refresh Feishu card for ancestor ${ancestor.taskId}: ${String(err)}`
+        );
+      }
+    }
+
+    return {
+      pinned: Boolean(pinned),
+      refreshed,
+      messageId: pinned?.messageId,
+    };
+  }
+
+  const autoProgress = new AutoProgressService(manager, scheduler, pusher, async (args) => {
+    await syncPinnedCards(args.conversationId, args.taskId);
+  });
+
+  const startupPromise = (async () => {
+    if (config.persistenceMode !== "file" || !config.restoreStateOnStartup) {
+      return;
+    }
+
+    await feishuPinnedCardStore.restore();
+
+    const conversations = await manager.listConversations();
+    for (const conversationId of conversations) {
+      const tasks = await manager.listTasks(conversationId);
+      for (const task of tasks) {
+        if (!["running", "retrying"].includes(task.status)) {
+          continue;
+        }
+        if (autoProgress.has(conversationId, task.taskId)) {
+          continue;
+        }
+        autoProgress.startHeartbeat(
+          conversationId,
+          task.taskId,
+          config.defaultUpdateIntervalMs
+        );
+      }
+    }
+  })();
 
   // Helper to get conversation ID from context
   function pickConversationId(context: any): string {
@@ -69,6 +164,10 @@ export default function register(api: any) {
   function pickModelName(context: any, explicit?: string): string | undefined {
     if (explicit) return explicit;
     return context?.session?.model?.name || context?.session?.model?.primary;
+  }
+
+  async function ensureReady(): Promise<void> {
+    await startupPromise;
   }
 
   // === progress_update ===
@@ -99,6 +198,7 @@ export default function register(api: any) {
       parentTaskId: Type.Optional(Type.String()),
     }),
     async execute(_id: string, params: UpdateProgressInput, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const modelName = pickModelName(context, params.model);
 
@@ -107,36 +207,7 @@ export default function register(api: any) {
         model: modelName,
       });
 
-      // Auto-refresh Feishu pinned card if exists
-      const pinned = feishuPinnedCardService?.get(conversationId, task.taskId);
-      let refreshed = false;
-
-      if (feishuPinnedCardService && pinned) {
-        try {
-          refreshed = await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
-        } catch (err) {
-          api.logger?.info?.(
-            `[progress-notifier] failed to refresh Feishu card for ${task.taskId}: ${String(err)}`
-          );
-        }
-      }
-
-      if (feishuPinnedCardService) {
-        const ancestors = await manager.ancestorsOfTask(conversationId, task.taskId);
-        for (const ancestor of ancestors) {
-          if (!feishuPinnedCardService.get(conversationId, ancestor.taskId)) {
-            continue;
-          }
-
-          try {
-            await feishuPinnedCardService.refresh(conversationId, ancestor.taskId, true);
-          } catch (err) {
-            api.logger?.info?.(
-              `[progress-notifier] failed to refresh Feishu card for ancestor ${ancestor.taskId}: ${String(err)}`
-            );
-          }
-        }
-      }
+      const cardSync = await syncPinnedCards(conversationId, task.taskId);
 
       // Auto-stop scheduled updates when a task is no longer actively running.
       if (["done", "failed", "canceled", "blocked", "queued"].includes(task.status)) {
@@ -153,7 +224,7 @@ export default function register(api: any) {
         );
       }
 
-      if (pinned && refreshed) {
+      if (cardSync.pinned && cardSync.refreshed) {
         return {
           content: [],
           metadata: {
@@ -161,7 +232,7 @@ export default function register(api: any) {
             task,
             pinned: true,
             refreshed: true,
-            messageId: pinned.messageId,
+            messageId: cardSync.messageId,
           },
         };
       }
@@ -173,9 +244,9 @@ export default function register(api: any) {
         metadata: {
           conversationId,
           task,
-          pinned: Boolean(pinned),
-          refreshed,
-          messageId: pinned?.messageId,
+          pinned: cardSync.pinned,
+          refreshed: cardSync.refreshed,
+          messageId: cardSync.messageId,
         },
       };
     },
@@ -189,6 +260,7 @@ export default function register(api: any) {
       taskId: Type.String(),
     }),
     async execute(_id: string, params: { taskId: string }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const task = await manager.getTask(conversationId, params.taskId);
 
@@ -222,6 +294,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: { status?: ProgressStatus }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const tasks = await manager.listTasks(conversationId, params.status);
 
@@ -245,6 +318,7 @@ export default function register(api: any) {
       all: Type.Optional(Type.Boolean()),
     }),
     async execute(_id: string, params: { taskId?: string; all?: boolean }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const removed = await manager.clearTask(conversationId, params.taskId, params.all ?? false);
 
@@ -266,6 +340,7 @@ export default function register(api: any) {
       taskId: Type.String(),
     }),
     async execute(_id: string, params: { taskId: string }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const summary = await manager.getSummary(conversationId, params.taskId);
 
@@ -296,6 +371,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: { taskId: string; outputMode?: string }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const task = await manager.getTask(conversationId, params.taskId);
 
@@ -336,6 +412,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: { taskId: string; outputMode?: string }, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const task = await manager.getTask(conversationId, params.taskId);
 
@@ -373,6 +450,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const children = await manager.childrenOfTask(conversationId, params.taskId);
 
@@ -405,6 +483,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const nodes = await manager.taskTree(conversationId, params.taskId);
 
@@ -436,6 +515,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: any) {
+      await ensureReady();
       const conversations = await manager.listConversations();
       const mode = params.outputMode ?? "text";
 
@@ -474,6 +554,7 @@ export default function register(api: any) {
       ])),
     }),
     async execute(_id: string, params: any) {
+      await ensureReady();
       const data = await manager.health();
       const rendered = manager.renderHealth(data, params.outputMode as any);
 
@@ -498,6 +579,7 @@ export default function register(api: any) {
       removeEmptyConversations: Type.Optional(Type.Boolean()),
     }),
     async execute(_id: string, params: any) {
+      await ensureReady();
       const data = await manager.cleanup({
         rebuildIndex: params.rebuildIndex ?? false,
         removeEmptyConversations: params.removeEmptyConversations ?? true,
@@ -522,6 +604,7 @@ export default function register(api: any) {
       enabled: Type.Optional(Type.Boolean()),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const taskId = params.taskId;
       const mode = params.mode ?? "heartbeat";
@@ -569,6 +652,7 @@ export default function register(api: any) {
       taskId: Type.String(),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const taskId = params.taskId;
 
@@ -603,6 +687,7 @@ export default function register(api: any) {
       showSummary: Type.Optional(Type.Boolean()),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       if (!feishuPinnedCardService) {
         return {
           content: [{ type: "text", text: "当前未配置飞书卡片服务，请先配置 feishuAppId 和 feishuAppSecret。" }],
@@ -647,6 +732,7 @@ export default function register(api: any) {
       taskId: Type.String(),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       if (!feishuPinnedCardService) {
         return {
           content: [{ type: "text", text: "当前未配置飞书卡片服务。" }],
@@ -686,6 +772,7 @@ export default function register(api: any) {
       showSummary: Type.Optional(Type.Boolean()),
     }),
     async execute(_id: string, params: any, context: any) {
+      await ensureReady();
       if (!feishuPinnedCardService) {
         return {
           content: [{ type: "text", text: "当前未配置飞书卡片服务。" }],
@@ -724,6 +811,7 @@ export default function register(api: any) {
       taskId: Type.Optional(Type.String()),
     }),
     async execute(_id: string, params: { taskId?: string }, context: any) {
+      await ensureReady();
       if (!feishuPinnedCardService) {
         return {
           content: [{ type: "text", text: "当前未配置飞书卡片服务。" }],
@@ -774,6 +862,7 @@ export default function register(api: any) {
   // === Inject prompt context hook ===
   if (config.injectPromptContext && typeof api.registerHook === "function") {
     api.registerHook("before_prompt_build", async (payload: any, context: any) => {
+      await ensureReady();
       const conversationId = pickConversationId(context);
       const progressText = await manager.getPromptContext(conversationId, config.promptContextLimit);
 
