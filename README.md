@@ -14,6 +14,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for full history.
 
 - **Task-based Progress**: Track multiple tasks with stable `taskId` per conversation
 - **Stage & Percent**: Auto-infer percent from stage, or set manually
+- **Weighted Progress**: Use child-task `weight` values for more realistic parent progress
 - **History & Replay**: Full event timeline for each task
 - **Metrics**: Duration, retries, blocks, stage timing
 - **Tree View**: Parent-child task hierarchy visualization
@@ -151,9 +152,11 @@ The recommended workflow is to create one parent task for the overall job, then 
 You only need to update child tasks in most cases. The parent task will automatically derive:
 
 - `percent` from child progress
+- `percent` can use weighted averages when child tasks provide `weight`
 - `status` from child states
 - `stage` from the earliest unfinished child stage
 - `label` from a short Chinese summary such as `1/2 子任务已完成，1 个运行中`
+- `label` can show weighted completion text such as `已完成 50%（按权重）`
 
 Example:
 
@@ -195,6 +198,41 @@ Once child tasks advance, the parent task can automatically become something lik
 ```text
 [research] 1/2 子任务已完成，1 个运行中
 [======>---] 67%
+```
+
+### Weighted Child Progress
+
+If child tasks do not contribute equally, add `weight` to each child task.
+
+Example:
+
+```json
+{
+  "taskId": "paper-1.search",
+  "parentTaskId": "paper-1",
+  "label": "检索资料",
+  "weight": 1,
+  "stage": "done",
+  "status": "done"
+}
+```
+
+```json
+{
+  "taskId": "paper-1.write",
+  "parentTaskId": "paper-1",
+  "label": "写正文",
+  "weight": 3,
+  "stage": "research",
+  "status": "running"
+}
+```
+
+In this case, the parent task uses a weighted average instead of treating both child tasks equally:
+
+```text
+[research] 已完成 50%（按权重），1/2 子任务已完成，1 个运行中
+[====>-----] 50%
 ```
 
 ### Basic Progress Update
