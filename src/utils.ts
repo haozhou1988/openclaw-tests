@@ -18,8 +18,14 @@ export function inferPercentFromStage(
 
 export function progressBar(percent: number): string {
   const safe = Math.max(0, Math.min(100, Math.round(percent)));
-  const filled = Math.round(safe / 10);
-  return "█".repeat(filled) + "░".repeat(10 - filled);
+  const width = 10;
+
+  if (safe >= 100) {
+    return `[${"=".repeat(width)}]`;
+  }
+
+  const filled = Math.min(width - 1, Math.floor((safe / 100) * width));
+  return `[${"=".repeat(filled)}>${"-".repeat(width - filled - 1)}]`;
 }
 
 export function pickConversationId(context: any): string {

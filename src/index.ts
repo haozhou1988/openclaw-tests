@@ -14,7 +14,11 @@ export default function register(api: any) {
   api.logger.info("[progress-notifier] register() called");
 
   // Get plugin-specific config from OpenClaw config path
-  const pluginConfig = api?.config?.plugins?.entries?.['progress-notifier']?.config || api?.config?.plugins?.['progress-notifier'] || {};
+  const pluginConfig =
+    api?.config?.plugins?.entries?.["progress-notifier"]?.config ||
+    api?.config?.plugins?.["progress-notifier"] ||
+    api?.config ||
+    {};
   
   const config = {
     ttlMs: pluginConfig.ttlMs ?? 600000,
@@ -96,14 +100,31 @@ export default function register(api: any) {
       });
 
       // Auto-refresh Feishu pinned card if exists
+      const pinned = feishuPinnedCardService?.get(conversationId, task.taskId);
+      let refreshed = false;
+
+      if (feishuPinnedCardService && pinned) {
+        try {
+          refreshed = await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
+        } catch (err) {
+          api.logger?.info?.(
+            `[progress-notifier] failed to refresh Feishu card for ${task.taskId}: ${String(err)}`
+          );
+        }
+      }
+
       if (feishuPinnedCardService) {
-        const pinned = feishuPinnedCardService.get(conversationId, task.taskId);
-        if (pinned) {
+        const ancestors = await manager.ancestorsOfTask(conversationId, task.taskId);
+        for (const ancestor of ancestors) {
+          if (!feishuPinnedCardService.get(conversationId, ancestor.taskId)) {
+            continue;
+          }
+
           try {
-            await feishuPinnedCardService.refresh(conversationId, task.taskId, true);
+            await feishuPinnedCardService.refresh(conversationId, ancestor.taskId, true);
           } catch (err) {
             api.logger?.info?.(
-              `[progress-notifier] failed to refresh Feishu card for ${task.taskId}: ${String(err)}`
+              `[progress-notifier] failed to refresh Feishu card for ancestor ${ancestor.taskId}: ${String(err)}`
             );
           }
         }
@@ -114,11 +135,30 @@ export default function register(api: any) {
         autoProgress.stop(conversationId, task.taskId);
       }
 
+      if (pinned && refreshed) {
+        return {
+          content: [],
+          metadata: {
+            conversationId,
+            task,
+            pinned: true,
+            refreshed: true,
+            messageId: pinned.messageId,
+          },
+        };
+      }
+
       const rendered = manager.renderTask(task);
 
       return {
         content: [{ type: "text", text: rendered as string }],
-        metadata: { conversationId, task },
+        metadata: {
+          conversationId,
+          task,
+          pinned: Boolean(pinned),
+          refreshed,
+          messageId: pinned?.messageId,
+        },
       };
     },
   });
@@ -655,6 +695,61 @@ export default function register(api: any) {
           metadata: { conversationId, taskId: params.taskId, error: String(err) },
         };
       }
+    },
+  });
+
+  // === progress_card_status ===
+   api.registerTool({
+    name: "progress_card_status",
+    description: "Show pinned Feishu progress card bindings for the current conversation or a single task.",
+    parameters: Type.Object({
+      taskId: Type.Optional(Type.String()),
+    }),
+    async execute(_id: string, params: { taskId?: string }, context: any) {
+      if (!feishuPinnedCardService) {
+        return {
+          content: [{ type: "text", text: "当前未配置飞书卡片服务。" }],
+          metadata: { enabled: false },
+        };
+      }
+
+      const conversationId = pickConversationId(context);
+
+      if (params.taskId) {
+        const record = feishuPinnedCardService.get(conversationId, params.taskId);
+        if (!record) {
+          return {
+            content: [{ type: "text", text: `任务 ${params.taskId} 当前没有绑定飞书进度卡片。` }],
+            metadata: { enabled: true, found: false, taskId: params.taskId },
+          };
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `任务 ${params.taskId} 已绑定飞书卡片，messageId=${record.messageId}，receiveId=${record.receiveId}。`,
+          }],
+          metadata: { enabled: true, found: true, record },
+        };
+      }
+
+      const records = feishuPinnedCardService.list(conversationId);
+      if (records.length === 0) {
+        return {
+          content: [{ type: "text", text: "当前会话没有绑定任何飞书进度卡片。" }],
+          metadata: { enabled: true, count: 0, records: [] },
+        };
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: records
+            .map((record) => `${record.taskId} -> ${record.messageId} (${record.receiveIdType}:${record.receiveId})`)
+            .join("\n"),
+        }],
+        metadata: { enabled: true, count: records.length, records },
+      };
     },
   });
 

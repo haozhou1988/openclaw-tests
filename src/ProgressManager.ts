@@ -4,6 +4,7 @@ import { MemoryAdapter, type PersistenceAdapter, type TaskRecordMap } from "./pe
 import { WorkflowAnalytics } from "./analytics/WorkflowAnalytics.js";
 import { TaskTreeManager } from "./tree/TaskTreeManager.js";
 import { TaskScheduler } from "./scheduler/TaskScheduler.js";
+import type { OutputMode } from "./types.js";
 
 export interface UpdateProgressInput {
   taskId: string;
@@ -50,6 +51,259 @@ export class ProgressManager {
     return Math.round((index / (this.defaultStages.length - 1)) * 100);
   }
 
+  private inferStageFromPercent(percent?: number): string | undefined {
+    const safe = this.normalizePercent(percent);
+    if (safe === undefined || this.defaultStages.length === 0) return undefined;
+    if (this.defaultStages.length === 1) return this.defaultStages[0];
+
+    const index = Math.min(
+      this.defaultStages.length - 1,
+      Math.round((safe / 100) * (this.defaultStages.length - 1))
+    );
+    return this.defaultStages[index];
+  }
+
+  private inferPercentFromHistory(task: TaskState): number | undefined {
+    if (task.status === "done") return 100;
+    if (task.status === "queued") return 0;
+
+    const updates = Math.max(1, task.history.length);
+    const cap = task.status === "failed" || task.status === "canceled" ? 95 : 90;
+    return Math.min(cap, updates * 12);
+  }
+
+  private childTasks(tasks: TaskRecordMap, parentTaskId: string): TaskState[] {
+    return Object.values(tasks).filter((task) => task.parentTaskId === parentTaskId);
+  }
+
+  private computeDerivedPercent(
+    taskId: string,
+    tasks: TaskRecordMap,
+    visiting = new Set<string>()
+  ): number | undefined {
+    const task = tasks[taskId];
+    if (!task) return undefined;
+    if (visiting.has(taskId)) return task.percent;
+
+    visiting.add(taskId);
+    const children = this.childTasks(tasks, taskId);
+
+    if (children.length > 0) {
+      const childPercents = children
+        .map((child) => this.computeDerivedPercent(child.taskId, tasks, visiting))
+        .filter((value): value is number => value !== undefined);
+
+      if (childPercents.length > 0) {
+        visiting.delete(taskId);
+        return this.normalizePercent(
+          childPercents.reduce((sum, value) => sum + value, 0) / childPercents.length
+        );
+      }
+    }
+
+    visiting.delete(taskId);
+
+    const stagePercent = this.inferPercentFromStage(task.stage);
+    if (stagePercent !== undefined) {
+      return stagePercent;
+    }
+
+    const hasExplicitPercent = task.history.some((event) => event.percent !== undefined);
+    if (hasExplicitPercent) {
+      return this.normalizePercent(task.percent);
+    }
+
+    return this.inferPercentFromHistory(task);
+  }
+
+  private computeDerivedStatus(
+    taskId: string,
+    tasks: TaskRecordMap,
+    visiting = new Set<string>()
+  ): ProgressStatus | undefined {
+    const task = tasks[taskId];
+    if (!task) return undefined;
+    if (visiting.has(taskId)) return task.status as ProgressStatus;
+
+    visiting.add(taskId);
+    const children = this.childTasks(tasks, taskId);
+
+    if (children.length === 0) {
+      visiting.delete(taskId);
+      return task.status as ProgressStatus;
+    }
+
+    const childStatuses = children
+      .map((child) => this.computeDerivedStatus(child.taskId, tasks, visiting))
+      .filter((status): status is ProgressStatus => status !== undefined);
+
+    visiting.delete(taskId);
+
+    if (childStatuses.length === 0) {
+      return task.status as ProgressStatus;
+    }
+
+    if (childStatuses.every((status) => status === "done")) {
+      return "done";
+    }
+
+    if (childStatuses.some((status) => status === "failed")) {
+      return "failed";
+    }
+
+    if (childStatuses.some((status) => status === "blocked")) {
+      return "blocked";
+    }
+
+    if (childStatuses.some((status) => status === "retrying")) {
+      return "retrying";
+    }
+
+    if (childStatuses.some((status) => status === "running")) {
+      return "running";
+    }
+
+    if (childStatuses.every((status) => status === "canceled")) {
+      return "canceled";
+    }
+
+    if (childStatuses.every((status) => status === "queued")) {
+      return "queued";
+    }
+
+    return "running";
+  }
+
+  private computeDerivedStage(
+    taskId: string,
+    tasks: TaskRecordMap,
+    visiting = new Set<string>()
+  ): string | undefined {
+    const task = tasks[taskId];
+    if (!task) return undefined;
+    if (visiting.has(taskId)) return task.stage ?? this.inferStageFromPercent(task.percent);
+
+    visiting.add(taskId);
+    const children = this.childTasks(tasks, taskId);
+
+    if (children.length === 0) {
+      visiting.delete(taskId);
+      return task.stage ?? this.inferStageFromPercent(task.percent);
+    }
+
+    const childSnapshots = children.map((child) => ({
+      status: this.computeDerivedStatus(child.taskId, tasks, new Set(visiting)),
+      stage: this.computeDerivedStage(child.taskId, tasks, new Set(visiting)),
+      percent: this.computeDerivedPercent(child.taskId, tasks, new Set(visiting)),
+    }));
+
+    visiting.delete(taskId);
+
+    if (childSnapshots.every((child) => child.status === "done")) {
+      return this.defaultStages[this.defaultStages.length - 1] ?? task.stage;
+    }
+
+    const activeStages = childSnapshots
+      .filter((child) => child.status !== "done" && child.status !== "canceled")
+      .map((child) => child.stage ?? this.inferStageFromPercent(child.percent))
+      .filter((stage): stage is string => Boolean(stage));
+
+    if (activeStages.length > 0) {
+      return activeStages.sort(
+        (a, b) => this.defaultStages.indexOf(a) - this.defaultStages.indexOf(b)
+      )[0];
+    }
+
+    const anyStage = childSnapshots
+      .map((child) => child.stage ?? this.inferStageFromPercent(child.percent))
+      .filter((stage): stage is string => Boolean(stage));
+
+    if (anyStage.length > 0) {
+      return anyStage.sort(
+        (a, b) => this.defaultStages.indexOf(a) - this.defaultStages.indexOf(b)
+      )[0];
+    }
+
+    return task.stage ?? this.inferStageFromPercent(task.percent);
+  }
+
+  private summarizeChildrenLabel(parent: TaskState, tasks: TaskRecordMap): string {
+    const children = this.childTasks(tasks, parent.taskId);
+    if (children.length === 0) {
+      return parent.label;
+    }
+
+    const total = children.length;
+    const counts = {
+      done: children.filter((child) => child.status === "done").length,
+      running: children.filter((child) => child.status === "running").length,
+      blocked: children.filter((child) => child.status === "blocked").length,
+      retrying: children.filter((child) => child.status === "retrying").length,
+      failed: children.filter((child) => child.status === "failed").length,
+      queued: children.filter((child) => child.status === "queued").length,
+      canceled: children.filter((child) => child.status === "canceled").length,
+    };
+
+    if (counts.done === total) {
+      return `全部 ${total} 个子任务已完成`;
+    }
+
+    const parts = [`${counts.done}/${total} 子任务已完成`];
+
+    if (counts.running > 0) parts.push(`${counts.running} 个运行中`);
+    if (counts.blocked > 0) parts.push(`${counts.blocked} 个阻塞中`);
+    if (counts.retrying > 0) parts.push(`${counts.retrying} 个重试中`);
+    if (counts.failed > 0) parts.push(`${counts.failed} 个失败`);
+    if (counts.queued > 0) parts.push(`${counts.queued} 个待开始`);
+    if (counts.canceled > 0) parts.push(`${counts.canceled} 个已取消`);
+
+    return parts.join("，");
+  }
+
+  private syncAncestorProgress(tasks: TaskRecordMap, taskId: string, now: number): void {
+    let currentParentId = tasks[taskId]?.parentTaskId;
+
+    while (currentParentId) {
+      const parent = tasks[currentParentId];
+      if (!parent) break;
+
+      const derivedPercent = this.computeDerivedPercent(parent.taskId, tasks);
+      const nextPercent = derivedPercent ?? parent.percent;
+      const nextStatus = this.computeDerivedStatus(parent.taskId, tasks) ?? (parent.status as ProgressStatus);
+      const nextStage = this.computeDerivedStage(parent.taskId, tasks) ?? parent.stage;
+      const nextLabel = this.summarizeChildrenLabel(parent, tasks);
+
+      if (
+        (nextPercent !== undefined && nextPercent !== parent.percent) ||
+        nextStatus !== parent.status ||
+        nextStage !== parent.stage ||
+        nextLabel !== parent.label
+      ) {
+        const event: ProgressEvent = {
+          ts: now,
+          label: nextLabel,
+          percent: nextPercent,
+          stage: nextStage,
+          model: parent.model,
+          status: nextStatus,
+        };
+
+        tasks[currentParentId] = {
+          ...parent,
+          label: nextLabel,
+          percent: nextPercent,
+          stage: nextStage,
+          status: nextStatus,
+          updatedAt: now,
+          expiresAt: now + this.ttlMs,
+          history: [...parent.history, event],
+        };
+      }
+
+      currentParentId = parent.parentTaskId;
+    }
+  }
+
   private cleanupExpired(tasks: TaskRecordMap): void {
     const now = Date.now();
     for (const [taskId, task] of Object.entries(tasks)) {
@@ -70,7 +324,8 @@ export class ProgressManager {
       ? this.stateMachine.nextStatus(existing.status as ProgressStatus, input.status)
       : (input.status ?? "running");
 
-    const percent = this.normalizePercent(input.percent) ?? this.inferPercentFromStage(input.stage);
+    const inputPercent = this.normalizePercent(input.percent);
+    const percent = inputPercent ?? this.inferPercentFromStage(input.stage);
 
     const event: ProgressEvent = {
       ts: now,
@@ -110,8 +365,17 @@ export class ProgressManager {
         };
 
     tasks[input.taskId] = task;
+    const derivedPercent = this.computeDerivedPercent(input.taskId, tasks);
+    if (derivedPercent !== undefined && derivedPercent !== task.percent) {
+      tasks[input.taskId] = {
+        ...tasks[input.taskId],
+        percent: derivedPercent,
+      };
+    }
+
+    this.syncAncestorProgress(tasks, input.taskId, now);
     await this.adapter.saveConversation(conversationId, tasks);
-    return task;
+    return tasks[input.taskId];
   }
 
   async getTask(conversationId: string, taskId: string): Promise<TaskState | undefined> {
@@ -223,6 +487,23 @@ export class ProgressManager {
   async descendantsOfTask(conversationId: string, taskId: string): Promise<TaskState[]> {
     const tasks = await this.listTasks(conversationId);
     return this.treeManager.getDescendants(tasks, taskId);
+  }
+
+  async ancestorsOfTask(conversationId: string, taskId: string): Promise<TaskState[]> {
+    const tasks = await this.adapter.loadConversation(conversationId);
+    this.cleanupExpired(tasks);
+
+    const ancestors: TaskState[] = [];
+    let currentParentId = tasks[taskId]?.parentTaskId;
+
+    while (currentParentId) {
+      const parent = tasks[currentParentId];
+      if (!parent) break;
+      ancestors.push(parent);
+      currentParentId = parent.parentTaskId;
+    }
+
+    return ancestors;
   }
 
   async taskTree(conversationId: string, rootTaskId?: string) {

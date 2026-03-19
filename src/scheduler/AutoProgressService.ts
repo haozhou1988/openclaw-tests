@@ -25,8 +25,12 @@ export class AutoProgressService {
     taskId: string,
     intervalMs: number,
     mode: ScheduleMode = "heartbeat"
-  ) {
-    return this.scheduler.start(
+  ): boolean {
+    if (this.scheduler.has(conversationId, taskId)) {
+      return false;
+    }
+
+    this.scheduler.start(
       conversationId,
       taskId,
       intervalMs,
@@ -96,10 +100,25 @@ export class AutoProgressService {
         }
       }
     );
+
+    return true;
   }
 
-  stop(conversationId: string, taskId: string): void {
+  startHeartbeat(conversationId: string, taskId: string, intervalMs: number): boolean {
+    return this.start(conversationId, taskId, intervalMs, "heartbeat");
+  }
+
+  startSummary(conversationId: string, taskId: string, intervalMs: number): boolean {
+    return this.start(conversationId, taskId, intervalMs, "summary");
+  }
+
+  stop(conversationId: string, taskId: string): boolean {
+    if (!this.scheduler.has(conversationId, taskId)) {
+      return false;
+    }
+
     this.scheduler.stop(conversationId, taskId);
+    return true;
   }
 
   stopAll(): void {

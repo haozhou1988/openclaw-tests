@@ -1,4 +1,5 @@
 import type { TaskState } from "../types.js";
+import { progressBar } from "../utils.js";
 
 export interface FeishuCardRenderOptions {
   title?: string;
@@ -14,6 +15,10 @@ export class FeishuCardRenderer {
     const title = options.title ?? "Workflow Progress";
     const progressText =
       task.percent !== undefined ? `${task.percent}%` : "N/A";
+    const progressBarText =
+      task.percent !== undefined
+        ? `${progressBar(task.percent)} ${progressText}${this.renderPercentDelta(task)}`
+        : "N/A";
     const updatedText = new Date(task.updatedAt).toISOString();
 
     const elements: any[] = [
@@ -62,6 +67,13 @@ export class FeishuCardRenderer {
         text: {
           tag: "lark_md",
           content: `**说明**: ${task.label}`,
+        },
+      },
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `**动态进度条**\n\`${progressBarText}\``,
         },
       },
     ];
@@ -114,5 +126,22 @@ export class FeishuCardRenderer {
         },
       },
     };
+  }
+
+  private renderPercentDelta(task: TaskState): string {
+    const previous = [...task.history]
+      .reverse()
+      .find((event) => event.percent !== undefined && event.percent !== task.percent);
+
+    if (task.percent === undefined || previous?.percent === undefined) {
+      return "";
+    }
+
+    const delta = task.percent - previous.percent;
+    if (delta === 0) {
+      return "";
+    }
+
+    return delta > 0 ? ` (+${delta}%)` : ` (${delta}%)`;
   }
 }

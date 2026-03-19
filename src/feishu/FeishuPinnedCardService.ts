@@ -29,7 +29,7 @@ export class FeishuPinnedCardService {
     const existing = this.store.get(args.conversationId, args.taskId);
     // Build summary from task data (since summarizeTask method doesn't exist)
     const summary = args.showSummary
-      ? `${task.label || args.taskId}: ${task.status} (${task.percent}%)`
+      ? this.buildSummaryText(task, args.taskId)
       : undefined;
 
     const card = this.renderer.renderTaskCard(task, {
@@ -84,7 +84,7 @@ export class FeishuPinnedCardService {
     if (!task) return false;
 
     const summary = showSummary
-      ? `${task.label || taskId}: ${task.status} (${task.percent}%)`
+      ? this.buildSummaryText(task, taskId)
       : undefined;
 
     const card = this.renderer.renderTaskCard(task, {
@@ -115,5 +115,14 @@ export class FeishuPinnedCardService {
 
   get(conversationId: string, taskId: string) {
     return this.store.get(conversationId, taskId);
+  }
+
+  list(conversationId?: string) {
+    return this.store.list(conversationId);
+  }
+
+  private buildSummaryText(task: TaskState, fallbackTaskId: string): string {
+    const progressText = task.percent !== undefined ? `${task.percent}%` : "N/A";
+    return `${task.label || fallbackTaskId}: ${task.status} (${progressText})`;
   }
 }
