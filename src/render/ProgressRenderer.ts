@@ -1,4 +1,4 @@
-import { progressBar } from "../utils.js";
+import { describeTimestampAge, getTaskWatchdog, progressBar } from "../utils.js";
 import type { OutputMode, ProgressEvent, TaskState } from "../types.js";
 
 export type { OutputMode, ProgressEvent, TaskState } from "../types.js";
@@ -8,8 +8,11 @@ export interface RenderOptions {
 }
 
 export class ProgressRenderer {
+  constructor(private config: { staleAfterMs?: number } = {}) {}
+
   renderTask(task: TaskState, options: RenderOptions = {}): string | object {
     const mode = options.mode ?? "text";
+    const watchdog = getTaskWatchdog(task, this.config.staleAfterMs);
 
     if (mode === "json") {
       return {
@@ -21,6 +24,9 @@ export class ProgressRenderer {
         percent: task.percent,
         model: task.model,
         updatedAt: task.updatedAt,
+        lastActivityAt: task.lastActivityAt,
+        lastHeartbeatAt: task.lastHeartbeatAt,
+        watchdog,
       };
     }
 
@@ -29,6 +35,8 @@ export class ProgressRenderer {
         task.taskId,
         task.stage ? `stage=${task.stage}` : "",
         `status=${task.status}`,
+        watchdog.state === "stale" ? `attention=${watchdog.state}` : "",
+        `inactiveMs=${watchdog.inactiveForMs}`,
         task.weight !== undefined ? `weight=${task.weight}` : "",
         task.percent !== undefined ? `percent=${task.percent}` : "",
         `label=${task.label}`,
@@ -39,6 +47,7 @@ export class ProgressRenderer {
     const headerParts: string[] = [];
     if (task.stage) headerParts.push(`[${task.stage}]`);
     if (task.status !== "running") headerParts.push(`[${task.status}]`);
+    if (watchdog.state === "stale") headerParts.push("[stale]");
     if (task.model) headerParts.push(`[${task.model}]`);
     headerParts.push(task.label);
 
@@ -46,8 +55,20 @@ export class ProgressRenderer {
     const bar = task.percent !== undefined
       ? `\n${this.progressBar(task.percent)} ${task.percent}%`
       : "";
+    const activityParts = [
+      `last activity ${describeTimestampAge(watchdog.lastActivityAt)}`,
+    ];
 
-    return `${header}${bar}`;
+    if (watchdog.lastHeartbeatAt !== undefined) {
+      activityParts.push(`heartbeat ${describeTimestampAge(watchdog.lastHeartbeatAt)}`);
+    }
+
+    const activityLabel =
+      watchdog.state === "stale"
+        ? `\nwatchdog: possibly stalled | ${activityParts.join(" | ")}`
+        : `\nactivity: ${activityParts.join(" | ")}`;
+
+    return `${header}${bar}${activityLabel}`;
   }
 
   renderTaskList(tasks: TaskState[], options: RenderOptions = {}): string | object {

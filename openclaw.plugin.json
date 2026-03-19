@@ -35,6 +35,15 @@
         "minimum": 5000,
         "default": 60000
       },
+      "staleAfterMs": {
+        "type": "integer",
+        "minimum": 10000,
+        "default": 180000
+      },
+      "autoHeartbeatOnProgress": {
+        "type": "boolean",
+        "default": true
+      },
       "pushScheduledMessages": {
         "type": "boolean",
         "default": true

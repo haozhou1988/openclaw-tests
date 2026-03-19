@@ -8,6 +8,7 @@ It supports:
 - parent/child task trees
 - automatic parent aggregation for `percent`, `status`, `stage`, and `label`
 - weighted child progress with optional `weight`
+- automatic heartbeat and stale-task watchdog signals
 - progress history, replay, and metrics
 - scheduled heartbeat and summary updates
 - Feishu pinned cards with automatic refresh
@@ -26,6 +27,12 @@ If you use parent and child tasks, the parent task can automatically derive:
 - `label` from an aggregated summary
 
 If child tasks have different importance, add `weight` to each child task and the parent will use a weighted average instead of equal weighting.
+
+The plugin also separates real work updates from heartbeat updates. That means you can tell the difference between:
+
+- the agent making real progress
+- the agent still alive but quiet
+- the agent possibly stalled because no real activity has happened for a while
 
 ## Installation
 
@@ -85,9 +92,58 @@ Common options:
 | `persistenceDir` | `string` | `".progress-store"` | File persistence directory |
 | `enableScheduledUpdates` | `boolean` | `false` | Enable periodic updates |
 | `defaultUpdateIntervalMs` | `number` | `60000` | Default schedule interval |
+| `staleAfterMs` | `number` | `180000` | Mark active tasks as stale when no real activity happens for this long |
+| `autoHeartbeatOnProgress` | `boolean` | `true` | Auto-start heartbeat after a task enters `running` or `retrying` |
 | `pushScheduledMessages` | `boolean` | `true` | Send scheduled update messages to the conversation |
 | `feishuAppId` | `string` | none | Feishu app id for card push |
 | `feishuAppSecret` | `string` | none | Feishu app secret for card push |
+
+## Agent Watchdog
+
+One of the main goals of this plugin is to make long silent agent runs less opaque.
+
+When a task is active:
+
+- real task updates refresh `lastActivityAt`
+- heartbeats refresh `lastHeartbeatAt`
+- the watchdog marks the task as `stale` if real activity has been quiet longer than `staleAfterMs`
+
+This is especially useful when an agent appears to stop replying in chat but is still working in the background.
+
+Example text rendering:
+
+```text
+[research] [stale] Drafting report
+[====>-----] 48%
+watchdog: possibly stalled | last activity 4m ago | heartbeat 10s ago
+```
+
+In Feishu cards, the same task shows:
+
+- current progress bar
+- current status and stage
+- last real activity time
+- last heartbeat time
+- a `Possibly stalled` subtitle when the watchdog fires
+
+Recommended config:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "progress-notifier": {
+        "enabled": true,
+        "config": {
+          "defaultUpdateIntervalMs": 60000,
+          "autoHeartbeatOnProgress": true,
+          "staleAfterMs": 180000
+        }
+      }
+    }
+  }
+}
+```
 
 ## Recommended Workflow
 
@@ -214,6 +270,8 @@ Scheduled modes:
 - `heartbeat`: keep a task visibly active
 - `summary`: send periodic recap-style updates
 
+`heartbeat` now acts as a true liveness signal. It refreshes watchdog timing without pretending real progress has advanced, so inferred percent does not drift upward just because the agent is still alive.
+
 ### Feishu Cards
 
 | Tool | Purpose |
@@ -224,6 +282,13 @@ Scheduled modes:
 | `progress_card_status` | Show card binding state |
 
 When a pinned task is updated, the plugin refreshes the Feishu card automatically. If a child task changes a derived parent value, the parent card can be refreshed too.
+
+This makes Feishu a practical "agent is still working" surface:
+
+- pin the parent task to a group or DM
+- let child tasks drive real progress
+- let heartbeat keep the card warm
+- watch for `Possibly stalled` when the agent has gone quiet for too long
 
 ## Output Modes
 
@@ -280,6 +345,7 @@ test/
 - Parent aggregation is automatic, but only after child task events exist.
 - If you do not provide `percent`, the plugin can infer it from `stage`.
 - If you do not provide either `percent` or `stage`, leaf tasks can still advance via history-based fallback.
+- Heartbeats do not count as real progress updates for fallback percent inference.
 
 ## License
 

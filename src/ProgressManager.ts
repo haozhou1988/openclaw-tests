@@ -15,21 +15,24 @@ export interface UpdateProgressInput {
   model?: string;
   status?: ProgressStatus;
   parentTaskId?: string;
+  heartbeat?: boolean;
 }
 
 export interface ProgressManagerConfig {
   ttlMs?: number;
   defaultStages?: string[];
+  staleAfterMs?: number;
 }
 
 export class ProgressManager {
   private stateMachine = new TaskStateMachine();
-  private renderer = new ProgressRenderer();
+  private renderer: ProgressRenderer;
   private analytics = new WorkflowAnalytics();
   private treeManager = new TaskTreeManager();
   public scheduler = new TaskScheduler();
   private ttlMs: number;
   private defaultStages: string[];
+  private staleAfterMs: number;
 
   constructor(
     private adapter: PersistenceAdapter = new MemoryAdapter(),
@@ -37,6 +40,8 @@ export class ProgressManager {
   ) {
     this.ttlMs = config.ttlMs ?? 600000;
     this.defaultStages = config.defaultStages ?? ["start", "research", "draft", "done"];
+    this.staleAfterMs = config.staleAfterMs ?? 180000;
+    this.renderer = new ProgressRenderer({ staleAfterMs: this.staleAfterMs });
   }
 
   private normalizePercent(percent?: number): number | undefined {
@@ -80,7 +85,8 @@ export class ProgressManager {
     if (task.status === "done") return 100;
     if (task.status === "queued") return 0;
 
-    const updates = Math.max(1, task.history.length);
+    const realUpdates = task.history.filter((event) => !event.heartbeat).length;
+    const updates = Math.max(1, realUpdates);
     const cap = task.status === "failed" || task.status === "canceled" ? 95 : 90;
     return Math.min(cap, updates * 12);
   }
@@ -321,10 +327,40 @@ export class ProgressManager {
           stage: nextStage,
           status: nextStatus,
           updatedAt: now,
+          lastActivityAt: now,
           expiresAt: now + this.ttlMs,
           history: [...parent.history, event],
         };
       }
+
+      currentParentId = parent.parentTaskId;
+    }
+  }
+
+  private syncAncestorHeartbeat(tasks: TaskRecordMap, taskId: string, now: number): void {
+    let currentParentId = tasks[taskId]?.parentTaskId;
+
+    while (currentParentId) {
+      const parent = tasks[currentParentId];
+      if (!parent) break;
+
+      const event: ProgressEvent = {
+        ts: now,
+        label: parent.label,
+        percent: parent.percent,
+        stage: parent.stage,
+        model: parent.model,
+        status: parent.status,
+        heartbeat: true,
+      };
+
+      tasks[currentParentId] = {
+        ...parent,
+        updatedAt: now,
+        lastHeartbeatAt: now,
+        expiresAt: now + this.ttlMs,
+        history: [...parent.history, event],
+      };
 
       currentParentId = parent.parentTaskId;
     }
@@ -361,6 +397,7 @@ export class ProgressManager {
       stage: input.stage,
       model: input.model,
       status: nextStatus,
+      heartbeat: input.heartbeat,
     };
 
     const task: TaskState = existing
@@ -374,6 +411,10 @@ export class ProgressManager {
           status: nextStatus,
           parentTaskId: input.parentTaskId ?? existing.parentTaskId,
           updatedAt: now,
+          lastActivityAt: input.heartbeat
+            ? (existing.lastActivityAt ?? existing.updatedAt)
+            : now,
+          lastHeartbeatAt: input.heartbeat ? now : existing.lastHeartbeatAt,
           expiresAt: now + this.ttlMs,
           history: [...existing.history, event],
         }
@@ -389,6 +430,8 @@ export class ProgressManager {
           status: nextStatus,
           createdAt: now,
           updatedAt: now,
+          lastActivityAt: now,
+          lastHeartbeatAt: input.heartbeat ? now : undefined,
           expiresAt: now + this.ttlMs,
           history: [event],
         };
@@ -405,6 +448,40 @@ export class ProgressManager {
     this.syncAncestorProgress(tasks, input.taskId, now);
     await this.adapter.saveConversation(conversationId, tasks);
     return tasks[input.taskId];
+  }
+
+  async touchTaskHeartbeat(
+    conversationId: string,
+    taskId: string
+  ): Promise<TaskState | undefined> {
+    const tasks = await this.adapter.loadConversation(conversationId);
+    this.cleanupExpired(tasks);
+
+    const existing = tasks[taskId];
+    if (!existing) return undefined;
+
+    const now = Date.now();
+    const event: ProgressEvent = {
+      ts: now,
+      label: existing.label,
+      percent: existing.percent,
+      stage: existing.stage,
+      model: existing.model,
+      status: existing.status,
+      heartbeat: true,
+    };
+
+    tasks[taskId] = {
+      ...existing,
+      updatedAt: now,
+      lastHeartbeatAt: now,
+      expiresAt: now + this.ttlMs,
+      history: [...existing.history, event],
+    };
+
+    this.syncAncestorHeartbeat(tasks, taskId, now);
+    await this.adapter.saveConversation(conversationId, tasks);
+    return tasks[taskId];
   }
 
   async getTask(conversationId: string, taskId: string): Promise<TaskState | undefined> {
@@ -586,6 +663,7 @@ export class ProgressManager {
       config: {
         ttlMs: this.ttlMs,
         defaultStages: this.defaultStages,
+        staleAfterMs: this.staleAfterMs,
       },
     };
   }

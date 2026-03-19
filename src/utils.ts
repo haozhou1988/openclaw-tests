@@ -1,3 +1,5 @@
+import type { ProgressStatus, TaskState } from "./types.js";
+
 export function normalizePercent(percent?: number): number | undefined {
   if (percent === undefined || percent === null || Number.isNaN(percent)) {
     return undefined;
@@ -26,6 +28,57 @@ export function progressBar(percent: number): string {
 
   const filled = Math.min(width - 1, Math.floor((safe / 100) * width));
   return `[${"=".repeat(filled)}>${"-".repeat(width - filled - 1)}]`;
+}
+
+export interface TaskWatchdogInfo {
+  state: "active" | "stale";
+  inactiveForMs: number;
+  lastActivityAt: number;
+  lastHeartbeatAt?: number;
+}
+
+export function formatElapsedMs(ms: number): string {
+  const safeMs = Math.max(0, Math.round(ms));
+  const totalSeconds = Math.floor(safeMs / 1000);
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) {
+    return seconds === 0 ? `${totalMinutes}m` : `${totalMinutes}m ${seconds}s`;
+  }
+
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${totalHours}h` : `${totalHours}h ${minutes}m`;
+}
+
+export function describeTimestampAge(timestamp: number, now = Date.now()): string {
+  return `${formatElapsedMs(Math.max(0, now - timestamp))} ago`;
+}
+
+export function getTaskWatchdog(
+  task: Pick<TaskState, "status" | "updatedAt" | "lastActivityAt" | "lastHeartbeatAt">,
+  staleAfterMs = 180000,
+  now = Date.now()
+): TaskWatchdogInfo {
+  const lastActivityAt = task.lastActivityAt ?? task.updatedAt;
+  const inactiveForMs = Math.max(0, now - lastActivityAt);
+  const activeStatuses: ProgressStatus[] = ["running", "retrying"];
+  const state =
+    activeStatuses.includes(task.status) && inactiveForMs >= staleAfterMs
+      ? "stale"
+      : "active";
+
+  return {
+    state,
+    inactiveForMs,
+    lastActivityAt,
+    lastHeartbeatAt: task.lastHeartbeatAt,
+  };
 }
 
 export function pickConversationId(context: any): string {

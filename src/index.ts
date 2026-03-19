@@ -30,6 +30,8 @@ export default function register(api: any) {
     pushScheduledMessages: pluginConfig.pushScheduledMessages ?? true,
     feishuAppId: pluginConfig.feishuAppId,
     feishuAppSecret: pluginConfig.feishuAppSecret,
+    staleAfterMs: pluginConfig.staleAfterMs ?? 180000,
+    autoHeartbeatOnProgress: pluginConfig.autoHeartbeatOnProgress ?? true,
   };
 
   const manager = new ProgressManager(undefined, config);
@@ -49,7 +51,7 @@ export default function register(api: any) {
     config.feishuAppId && config.feishuAppSecret
       ? new FeishuPinnedCardService(
           manager,
-          new FeishuCardRenderer(),
+          new FeishuCardRenderer({ staleAfterMs: config.staleAfterMs }),
           new FeishuCardPusher({
             appId: config.feishuAppId,
             appSecret: config.feishuAppSecret,
@@ -131,9 +133,19 @@ export default function register(api: any) {
         }
       }
 
-      // Auto-stop scheduled updates when task is done
-      if (["done", "failed", "canceled"].includes(task.status)) {
+      // Auto-stop scheduled updates when a task is no longer actively running.
+      if (["done", "failed", "canceled", "blocked", "queued"].includes(task.status)) {
         autoProgress.stop(conversationId, task.taskId);
+      } else if (
+        config.autoHeartbeatOnProgress &&
+        ["running", "retrying"].includes(task.status) &&
+        !autoProgress.has(conversationId, task.taskId)
+      ) {
+        autoProgress.startHeartbeat(
+          conversationId,
+          task.taskId,
+          config.defaultUpdateIntervalMs
+        );
       }
 
       if (pinned && refreshed) {

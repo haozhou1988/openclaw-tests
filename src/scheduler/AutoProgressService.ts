@@ -49,15 +49,11 @@ export class AutoProgressService {
         }
 
         if (mode === "heartbeat") {
-          const updated = await this.manager.updateTask(conversationId, {
-            taskId,
-            label: `仍在处理中：${task.label}`,
-            stage: task.stage,
-            status: task.status,
-            percent: task.percent,
-            parentTaskId: task.parentTaskId,
-            model: task.model,
-          });
+          const updated = await this.manager.touchTaskHeartbeat(conversationId, taskId);
+          if (!updated) {
+            this.scheduler.stop(conversationId, taskId);
+            return;
+          }
 
           const text = String(this.manager.renderTask(updated, "text"));
 
@@ -81,7 +77,7 @@ export class AutoProgressService {
 
           const updated = await this.manager.updateTask(conversationId, {
             taskId,
-            label: `定时汇报：${task.label}`,
+            label: `Scheduled summary: ${task.label}`,
             stage: task.stage,
             status: task.status,
             percent: task.percent,
@@ -89,7 +85,7 @@ export class AutoProgressService {
             model: task.model,
           });
 
-          const text = String(this.manager.renderTask(updated, "text"));
+          const text = `${summary}\n\n${String(this.manager.renderTask(updated, "text"))}`;
 
           await this.pushIfPossible({
             conversationId,

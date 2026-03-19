@@ -16,6 +16,7 @@ export interface ProgressEvent {
   stage?: string;
   model?: string;
   status?: ProgressStatus;
+  heartbeat?: boolean;
 }
 
 export interface TaskState {
@@ -30,6 +31,8 @@ export interface TaskState {
   status: ProgressStatus;
   createdAt: number;
   updatedAt: number;
+  lastActivityAt?: number;
+  lastHeartbeatAt?: number;
   expiresAt?: number;
   history: ProgressEvent[];
 }
@@ -41,6 +44,8 @@ export interface PluginConfig {
   defaultStages?: string[];
   persistenceMode?: "memory" | "file";
   persistenceDir?: string;
+  staleAfterMs?: number;
+  autoHeartbeatOnProgress?: boolean;
 }
 
 export interface UpdateProgressInput {
@@ -52,6 +57,7 @@ export interface UpdateProgressInput {
   model?: string;
   status?: ProgressStatus;
   parentTaskId?: string;
+  heartbeat?: boolean;
 }
 
 export interface GetProgressInput {
@@ -146,6 +152,8 @@ export interface PluginConfig {
   pushScheduledMessages?: boolean;
   feishuAppId?: string;
   feishuAppSecret?: string;
+  staleAfterMs?: number;
+  autoHeartbeatOnProgress?: boolean;
 }
 
 export interface PinCardInput {

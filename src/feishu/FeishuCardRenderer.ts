@@ -1,5 +1,5 @@
 import type { TaskState } from "../types.js";
-import { progressBar } from "../utils.js";
+import { describeTimestampAge, getTaskWatchdog, progressBar } from "../utils.js";
 
 export interface FeishuCardRenderOptions {
   title?: string;
@@ -8,13 +8,15 @@ export interface FeishuCardRenderOptions {
 }
 
 export class FeishuCardRenderer {
+  constructor(private config: { staleAfterMs?: number } = {}) {}
+
   renderTaskCard(
     task: TaskState,
     options: FeishuCardRenderOptions = {}
   ): Record<string, any> {
     const title = options.title ?? "Workflow Progress";
-    const progressText =
-      task.percent !== undefined ? `${task.percent}%` : "N/A";
+    const watchdog = getTaskWatchdog(task, this.config.staleAfterMs);
+    const progressText = task.percent !== undefined ? `${task.percent}%` : "N/A";
     const progressBarText =
       task.percent !== undefined
         ? `${progressBar(task.percent)} ${progressText}${this.renderPercentDelta(task)}`
@@ -26,7 +28,7 @@ export class FeishuCardRenderer {
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `**任务**: ${task.taskId}`,
+          content: `**Task**: ${task.taskId}`,
         },
       },
       {
@@ -36,28 +38,28 @@ export class FeishuCardRenderer {
             is_short: true,
             text: {
               tag: "lark_md",
-              content: `**阶段**\n${task.stage ?? "N/A"}`,
+              content: `**Stage**\n${task.stage ?? "N/A"}`,
             },
           },
           {
             is_short: true,
             text: {
               tag: "lark_md",
-              content: `**状态**\n${task.status}`,
+              content: `**Status**\n${task.status}`,
             },
           },
           {
             is_short: true,
             text: {
               tag: "lark_md",
-              content: `**进度**\n${progressText}`,
+              content: `**Progress**\n${progressText}`,
             },
           },
           {
             is_short: true,
             text: {
               tag: "lark_md",
-              content: `**更新时间**\n${updatedText}`,
+              content: `**Updated**\n${updatedText}`,
             },
           },
         ],
@@ -66,39 +68,35 @@ export class FeishuCardRenderer {
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `**说明**: ${task.label}`,
+          content: `**Label**: ${task.label}`,
         },
       },
       {
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `**动态进度条**\n\`${progressBarText}\``,
+          content: `**Progress Bar**\n\`${progressBarText}\``,
+        },
+      },
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `**Agent Activity**\n${this.renderActivityText(watchdog)}`,
         },
       },
     ];
 
     if (options.showSummary && options.summaryText) {
-      elements.push({
-        tag: "hr",
-      });
+      elements.push({ tag: "hr" });
       elements.push({
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `**摘要**\n${options.summaryText}`,
+          content: `**Summary**\n${options.summaryText}`,
         },
       });
     }
-
-    const statusText =
-      task.status === "done"
-        ? "已完成"
-        : task.status === "failed"
-        ? "失败"
-        : task.status === "canceled"
-        ? "已取消"
-        : "处理中";
 
     return {
       type: "template",
@@ -118,7 +116,7 @@ export class FeishuCardRenderer {
           },
           subtitle: {
             tag: "plain_text",
-            content: statusText,
+            content: this.renderStatusText(task.status, watchdog.state),
           },
         },
         body: {
@@ -143,5 +141,34 @@ export class FeishuCardRenderer {
     }
 
     return delta > 0 ? ` (+${delta}%)` : ` (${delta}%)`;
+  }
+
+  private renderStatusText(
+    status: TaskState["status"],
+    watchdogState: "active" | "stale"
+  ): string {
+    if (status === "done") return "Completed";
+    if (status === "failed") return "Failed";
+    if (status === "canceled") return "Canceled";
+    if (watchdogState === "stale") return "Possibly stalled";
+    return "Working";
+  }
+
+  private renderActivityText(
+    watchdog: ReturnType<typeof getTaskWatchdog>
+  ): string {
+    const parts = [
+      `last activity ${describeTimestampAge(watchdog.lastActivityAt)}`,
+    ];
+
+    if (watchdog.lastHeartbeatAt !== undefined) {
+      parts.push(`last heartbeat ${describeTimestampAge(watchdog.lastHeartbeatAt)}`);
+    }
+
+    if (watchdog.state === "stale") {
+      parts.unshift("watchdog: possibly stalled");
+    }
+
+    return parts.join(" | ");
   }
 }
