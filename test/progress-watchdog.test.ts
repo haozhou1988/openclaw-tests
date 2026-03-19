@@ -138,4 +138,59 @@ describe("progress watchdog", () => {
       ctx
     );
   });
+
+  it("shows waiting_external before escalating to external call slow", async () => {
+    const manager = new ProgressManager(undefined, { staleAfterMs: 5000 });
+
+    const waiting = await manager.updateTask("conv-1", {
+      taskId: "task-2",
+      label: "Waiting for OpenAI response",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "openai",
+    });
+
+    expect(waiting.activityState).toBe("waiting_external");
+    expect(waiting.waitingOn).toBe("openai");
+    expect(waiting.externalCallStartedAt).toBeDefined();
+
+    const waitingRendered = String(manager.renderTask(waiting));
+    expect(waitingRendered).toContain("[waiting:openai]");
+    expect(waitingRendered).toContain("waiting on openai");
+
+    vi.advanceTimersByTime(6000);
+
+    const afterHeartbeat = await manager.touchTaskHeartbeat("conv-1", "task-2");
+    const slowRendered = String(manager.renderTask(afterHeartbeat!));
+
+    expect(slowRendered).toContain("[api-slow:openai]");
+    expect(slowRendered).toContain("external call slow (openai)");
+  });
+
+  it("clears waiting_external after a real progress update resumes", async () => {
+    const manager = new ProgressManager(undefined, { staleAfterMs: 5000 });
+
+    await manager.updateTask("conv-1", {
+      taskId: "task-3",
+      label: "Waiting for search API",
+      status: "running",
+      activityState: "waiting_external",
+      waitingOn: "search-api",
+    });
+
+    const resumed = await manager.updateTask("conv-1", {
+      taskId: "task-3",
+      label: "Search results received",
+      status: "running",
+      stage: "research",
+    });
+
+    expect(resumed.activityState).toBeUndefined();
+    expect(resumed.waitingOn).toBeUndefined();
+    expect(resumed.externalCallStartedAt).toBeUndefined();
+
+    const rendered = String(manager.renderTask(resumed));
+    expect(rendered).not.toContain("waiting on");
+    expect(rendered).not.toContain("external call slow");
+  });
 });

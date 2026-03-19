@@ -82,6 +82,11 @@ export default function register(api: any) {
       percent: Type.Optional(Type.Number()),
       stage: Type.Optional(Type.String()),
       model: Type.Optional(Type.String()),
+      activityState: Type.Optional(
+        Type.Union([Type.Literal("working"), Type.Literal("waiting_external")])
+      ),
+      waitingOn: Type.Optional(Type.String()),
+      externalCallStartedAt: Type.Optional(Type.Number()),
       status: Type.Optional(Type.Union([
         Type.Literal("queued"),
         Type.Literal("running"),

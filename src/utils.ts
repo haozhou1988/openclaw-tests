@@ -1,4 +1,4 @@
-import type { ProgressStatus, TaskState } from "./types.js";
+import type { ActivityState, ProgressStatus, TaskState } from "./types.js";
 
 export function normalizePercent(percent?: number): number | undefined {
   if (percent === undefined || percent === null || Number.isNaN(percent)) {
@@ -31,10 +31,12 @@ export function progressBar(percent: number): string {
 }
 
 export interface TaskWatchdogInfo {
-  state: "active" | "stale";
+  state: "active" | "waiting_external" | "waiting_external_slow" | "stale";
   inactiveForMs: number;
   lastActivityAt: number;
   lastHeartbeatAt?: number;
+  waitingOn?: string;
+  waitingForMs?: number;
 }
 
 export function formatElapsedMs(ms: number): string {
@@ -61,23 +63,48 @@ export function describeTimestampAge(timestamp: number, now = Date.now()): strin
 }
 
 export function getTaskWatchdog(
-  task: Pick<TaskState, "status" | "updatedAt" | "lastActivityAt" | "lastHeartbeatAt">,
+  task: Pick<
+    TaskState,
+    | "status"
+    | "updatedAt"
+    | "lastActivityAt"
+    | "lastHeartbeatAt"
+    | "activityState"
+    | "waitingOn"
+    | "externalCallStartedAt"
+  >,
   staleAfterMs = 180000,
   now = Date.now()
 ): TaskWatchdogInfo {
   const lastActivityAt = task.lastActivityAt ?? task.updatedAt;
   const inactiveForMs = Math.max(0, now - lastActivityAt);
   const activeStatuses: ProgressStatus[] = ["running", "retrying"];
-  const state =
-    activeStatuses.includes(task.status) && inactiveForMs >= staleAfterMs
-      ? "stale"
-      : "active";
+  const waitingState: ActivityState | undefined = task.activityState;
+  const waitingStartedAt = task.externalCallStartedAt ?? lastActivityAt;
+  const waitingForMs =
+    waitingState === "waiting_external"
+      ? Math.max(0, now - waitingStartedAt)
+      : undefined;
+
+  let state: TaskWatchdogInfo["state"] = "active";
+  if (activeStatuses.includes(task.status)) {
+    if (waitingState === "waiting_external") {
+      state =
+        waitingForMs !== undefined && waitingForMs >= staleAfterMs
+          ? "waiting_external_slow"
+          : "waiting_external";
+    } else if (inactiveForMs >= staleAfterMs) {
+      state = "stale";
+    }
+  }
 
   return {
     state,
     inactiveForMs,
     lastActivityAt,
     lastHeartbeatAt: task.lastHeartbeatAt,
+    waitingOn: task.waitingOn,
+    waitingForMs,
   };
 }
 

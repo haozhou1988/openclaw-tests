@@ -4,7 +4,7 @@ import { MemoryAdapter, type PersistenceAdapter, type TaskRecordMap } from "./pe
 import { WorkflowAnalytics } from "./analytics/WorkflowAnalytics.js";
 import { TaskTreeManager } from "./tree/TaskTreeManager.js";
 import { TaskScheduler } from "./scheduler/TaskScheduler.js";
-import type { OutputMode } from "./types.js";
+import type { ActivityState, OutputMode } from "./types.js";
 
 export interface UpdateProgressInput {
   taskId: string;
@@ -16,6 +16,9 @@ export interface UpdateProgressInput {
   status?: ProgressStatus;
   parentTaskId?: string;
   heartbeat?: boolean;
+  activityState?: ActivityState;
+  waitingOn?: string;
+  externalCallStartedAt?: number;
 }
 
 export interface ProgressManagerConfig {
@@ -59,6 +62,12 @@ export class ProgressManager {
       return undefined;
     }
     return weight > 0 ? weight : undefined;
+  }
+
+  private normalizeActivityState(activityState?: ActivityState): ActivityState | undefined {
+    return activityState === "working" || activityState === "waiting_external"
+      ? activityState
+      : undefined;
   }
 
   private inferPercentFromStage(stage?: string): number | undefined {
@@ -326,6 +335,8 @@ export class ProgressManager {
           percent: nextPercent,
           stage: nextStage,
           status: nextStatus,
+          activityState: parent.activityState,
+          waitingOn: parent.waitingOn,
           updatedAt: now,
           lastActivityAt: now,
           expiresAt: now + this.ttlMs,
@@ -352,6 +363,8 @@ export class ProgressManager {
         model: parent.model,
         status: parent.status,
         heartbeat: true,
+        activityState: parent.activityState,
+        waitingOn: parent.waitingOn,
       };
 
       tasks[currentParentId] = {
@@ -388,6 +401,23 @@ export class ProgressManager {
 
     const inputPercent = this.normalizePercent(input.percent);
     const inputWeight = this.normalizeWeight(input.weight);
+    const inputActivityState = this.normalizeActivityState(input.activityState);
+    const nextActivityState =
+      inputActivityState ??
+      (input.heartbeat
+        ? existing?.activityState
+        : undefined);
+    const nextWaitingOn =
+      nextActivityState === "waiting_external"
+        ? input.waitingOn ?? existing?.waitingOn
+        : undefined;
+    const nextExternalCallStartedAt =
+      nextActivityState === "waiting_external"
+        ? input.externalCallStartedAt ??
+          (existing?.activityState === "waiting_external"
+            ? existing.externalCallStartedAt
+            : now)
+        : undefined;
     const percent = inputPercent ?? this.inferPercentFromStage(input.stage);
 
     const event: ProgressEvent = {
@@ -398,6 +428,8 @@ export class ProgressManager {
       model: input.model,
       status: nextStatus,
       heartbeat: input.heartbeat,
+      activityState: nextActivityState,
+      waitingOn: nextWaitingOn,
     };
 
     const task: TaskState = existing
@@ -409,6 +441,9 @@ export class ProgressManager {
           stage: input.stage ?? existing.stage,
           model: input.model ?? existing.model,
           status: nextStatus,
+          activityState: nextActivityState,
+          waitingOn: nextWaitingOn,
+          externalCallStartedAt: nextExternalCallStartedAt,
           parentTaskId: input.parentTaskId ?? existing.parentTaskId,
           updatedAt: now,
           lastActivityAt: input.heartbeat
@@ -428,6 +463,9 @@ export class ProgressManager {
           stage: input.stage,
           model: input.model,
           status: nextStatus,
+          activityState: nextActivityState,
+          waitingOn: nextWaitingOn,
+          externalCallStartedAt: nextExternalCallStartedAt,
           createdAt: now,
           updatedAt: now,
           lastActivityAt: now,
@@ -469,6 +507,8 @@ export class ProgressManager {
       model: existing.model,
       status: existing.status,
       heartbeat: true,
+      activityState: existing.activityState,
+      waitingOn: existing.waitingOn,
     };
 
     tasks[taskId] = {

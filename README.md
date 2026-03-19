@@ -33,6 +33,7 @@ The plugin also separates real work updates from heartbeat updates. That means y
 - the agent making real progress
 - the agent still alive but quiet
 - the agent possibly stalled because no real activity has happened for a while
+- the agent explicitly waiting on an external API or tool
 
 ## Installation
 
@@ -106,6 +107,7 @@ When a task is active:
 
 - real task updates refresh `lastActivityAt`
 - heartbeats refresh `lastHeartbeatAt`
+- `activityState: "waiting_external"` marks the task as waiting on an external dependency
 - the watchdog marks the task as `stale` if real activity has been quiet longer than `staleAfterMs`
 
 This is especially useful when an agent appears to stop replying in chat but is still working in the background.
@@ -117,6 +119,36 @@ Example text rendering:
 [====>-----] 48%
 watchdog: possibly stalled | last activity 4m ago | heartbeat 10s ago
 ```
+
+When you know the agent is waiting on an API or tool, update the same task with:
+
+```json
+{
+  "taskId": "paper-1",
+  "label": "Waiting for OpenAI response",
+  "status": "running",
+  "activityState": "waiting_external",
+  "waitingOn": "openai"
+}
+```
+
+Then the watchdog will render something like:
+
+```text
+[research] [waiting:openai] Waiting for OpenAI response
+[====>-----] 48%
+activity: waiting on openai | waiting 42s | last activity 0s ago | heartbeat 10s ago
+```
+
+If that external call keeps hanging past `staleAfterMs`, it upgrades to a slower-warning state instead of pretending the task is generally stalled:
+
+```text
+[research] [api-slow:openai] Waiting for OpenAI response
+[====>-----] 48%
+watchdog: external call slow (openai) | waiting 3m | last activity 3m ago | heartbeat 10s ago
+```
+
+When real work resumes, send a normal `progress_update` without `activityState` and the waiting state is cleared automatically.
 
 In Feishu cards, the same task shows:
 

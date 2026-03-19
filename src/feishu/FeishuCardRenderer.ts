@@ -1,5 +1,10 @@
 import type { TaskState } from "../types.js";
-import { describeTimestampAge, getTaskWatchdog, progressBar } from "../utils.js";
+import {
+  describeTimestampAge,
+  formatElapsedMs,
+  getTaskWatchdog,
+  progressBar,
+} from "../utils.js";
 
 export interface FeishuCardRenderOptions {
   title?: string;
@@ -45,7 +50,7 @@ export class FeishuCardRenderer {
             is_short: true,
             text: {
               tag: "lark_md",
-              content: `**Status**\n${task.status}`,
+              content: `**Status**\n${this.renderStatusText(task.status, watchdog.state)}`,
             },
           },
           {
@@ -145,11 +150,13 @@ export class FeishuCardRenderer {
 
   private renderStatusText(
     status: TaskState["status"],
-    watchdogState: "active" | "stale"
+    watchdogState: ReturnType<typeof getTaskWatchdog>["state"]
   ): string {
     if (status === "done") return "Completed";
     if (status === "failed") return "Failed";
     if (status === "canceled") return "Canceled";
+    if (watchdogState === "waiting_external") return "Waiting on external call";
+    if (watchdogState === "waiting_external_slow") return "External call slow";
     if (watchdogState === "stale") return "Possibly stalled";
     return "Working";
   }
@@ -165,7 +172,23 @@ export class FeishuCardRenderer {
       parts.push(`last heartbeat ${describeTimestampAge(watchdog.lastHeartbeatAt)}`);
     }
 
-    if (watchdog.state === "stale") {
+    if (watchdog.state === "waiting_external") {
+      parts.unshift(
+        `waiting on ${watchdog.waitingOn ?? "external"}${
+          watchdog.waitingForMs !== undefined
+            ? ` for ${formatElapsedMs(watchdog.waitingForMs)}`
+            : ""
+        }`
+      );
+    } else if (watchdog.state === "waiting_external_slow") {
+      parts.unshift(
+        `external call slow (${watchdog.waitingOn ?? "external"})${
+          watchdog.waitingForMs !== undefined
+            ? ` | ${formatElapsedMs(watchdog.waitingForMs)}`
+            : ""
+        }`
+      );
+    } else if (watchdog.state === "stale") {
       parts.unshift("watchdog: possibly stalled");
     }
 

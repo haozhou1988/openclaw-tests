@@ -8,6 +8,7 @@ export type ProgressStatus =
   | "canceled";
 
 export type OutputMode = "text" | "compact" | "json";
+export type ActivityState = "working" | "waiting_external";
 
 export interface ProgressEvent {
   ts: number;
@@ -17,6 +18,8 @@ export interface ProgressEvent {
   model?: string;
   status?: ProgressStatus;
   heartbeat?: boolean;
+  activityState?: ActivityState;
+  waitingOn?: string;
 }
 
 export interface TaskState {
@@ -29,6 +32,9 @@ export interface TaskState {
   stage?: string;
   model?: string;
   status: ProgressStatus;
+  activityState?: ActivityState;
+  waitingOn?: string;
+  externalCallStartedAt?: number;
   createdAt: number;
   updatedAt: number;
   lastActivityAt?: number;
@@ -58,6 +64,9 @@ export interface UpdateProgressInput {
   status?: ProgressStatus;
   parentTaskId?: string;
   heartbeat?: boolean;
+  activityState?: ActivityState;
+  waitingOn?: string;
+  externalCallStartedAt?: number;
 }
 
 export interface GetProgressInput {
