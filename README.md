@@ -1,42 +1,39 @@
-# Progress Notifier Plugin
+# Progress Notifier
 
-A lightweight OpenClaw plugin for task-based progress tracking and workflow management in long-running agent conversations.
+`progress-notifier` is an OpenClaw plugin for tracking long-running work with task-based progress updates.
 
-## What's New in v0.4.0
+It supports:
 
-- **Scheduled Updates**: `progress_schedule` / `progress_unschedule` for long-running tasks
-- **Feishu Cards**: Pinned progress cards that auto-refresh on updates
-- **Better Renderer**: Status-colored headers, progress bars, metrics overview
+- task progress records with stable `taskId`
+- parent/child task trees
+- automatic parent aggregation for `percent`, `status`, `stage`, and `label`
+- weighted child progress with optional `weight`
+- progress history, replay, and metrics
+- scheduled heartbeat and summary updates
+- Feishu pinned cards with automatic refresh
+- prompt-context injection for active tasks
 
-See [CHANGELOG.md](./CHANGELOG.md) for full history.
+## How It Works
 
-## Features
+The plugin is designed around task updates rather than one-off status messages.
 
-- **Task-based Progress**: Track multiple tasks with stable `taskId` per conversation
-- **Stage & Percent**: Auto-infer percent from stage, or set manually
-- **Weighted Progress**: Use child-task `weight` values for more realistic parent progress
-- **History & Replay**: Full event timeline for each task
-- **Metrics**: Duration, retries, blocks, stage timing
-- **Tree View**: Parent-child task hierarchy visualization
-- **Persistence**: In-memory (default) or file-based with atomic writes
-- **Prompt Injection**: Auto-inject active task context into LLM prompts
+You create a task with `progress_update`, then keep updating the same `taskId` as work advances.
+If you use parent and child tasks, the parent task can automatically derive:
 
-## Architecture
+- `percent` from child progress
+- `status` from child states
+- `stage` from the earliest unfinished child stage
+- `label` from an aggregated summary
 
-```
-src/
-├── types.ts           # Shared TypeScript interfaces
-├── utils.ts           # Helpers: percent, progress bar, context pickers
-├── ProgressManager.ts # Core orchestrator
-├── analytics/         # WorkflowAnalytics: replay, metrics, summary
-├── hooks/            # injectPromptContext: prompt injection logic
-├── persistence/      # PersistenceAdapter, MemoryAdapter, FileAdapter
-├── render/           # ProgressRenderer: text/compact/json output
-├── state/            # TaskStateMachine: status transitions
-└── tree/             # TaskTreeManager: parent-child hierarchy
-```
+If child tasks have different importance, add `weight` to each child task and the parent will use a weighted average instead of equal weighting.
 
 ## Installation
+
+This repository is a local OpenClaw plugin directory. The plugin manifest is:
+
+- [openclaw.plugin.json](./openclaw.plugin.json)
+
+Enable it in your OpenClaw config:
 
 ```json
 {
@@ -50,134 +47,75 @@ src/
 }
 ```
 
+If your OpenClaw setup requires an explicit local path, use the repository path:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "progress-notifier": {
+        "enabled": true,
+        "path": "C:\\path\\to\\openclaw-progress-notifier",
+        "config": {
+          "injectPromptContext": true,
+          "persistenceMode": "file",
+          "persistenceDir": ".progress-store"
+        }
+      }
+    }
+  }
+}
+```
+
+After enabling it, restart OpenClaw and confirm tools such as `progress_update`, `progress_get`, and `progress_tree` are available.
+
 ## Configuration
 
+The plugin config schema is defined in [openclaw.plugin.json](./openclaw.plugin.json).
+
+Common options:
+
 | Config | Type | Default | Description |
-|--------|------|---------|-------------|
-| `ttlMs` | number | 600000 | Task expiration time (ms) |
-| `injectPromptContext` | boolean | true | Auto-inject progress into prompts |
-| `promptContextLimit` | number | 2 | Max active tasks in prompt |
-| `defaultStages` | string[] | ["start","research","draft","done"] | Stage pipeline |
-| `persistenceMode` | "memory" \| "file" | "memory" | Storage backend |
-| `persistenceDir` | string | ".progress-store" | File adapter directory |
-| `enableScheduledUpdates` | boolean | false | Enable scheduled progress updates |
-| `defaultUpdateIntervalMs` | number | 60000 | Default interval for scheduled updates (ms) |
-| `pushScheduledMessages` | boolean | true | Push scheduled updates to conversation |
+|---|---|---:|---|
+| `ttlMs` | `number` | `600000` | Task expiration time in milliseconds |
+| `injectPromptContext` | `boolean` | `true` | Inject active progress context into prompts |
+| `promptContextLimit` | `number` | `2` | Maximum active tasks injected into prompts |
+| `defaultStages` | `string[]` | `["start","research","draft","revise","done"]` | Stage pipeline used for stage-based percent inference |
+| `persistenceMode` | `"memory" \| "file"` | `"memory"` | Storage backend |
+| `persistenceDir` | `string` | `".progress-store"` | File persistence directory |
+| `enableScheduledUpdates` | `boolean` | `false` | Enable periodic updates |
+| `defaultUpdateIntervalMs` | `number` | `60000` | Default schedule interval |
+| `pushScheduledMessages` | `boolean` | `true` | Send scheduled update messages to the conversation |
+| `feishuAppId` | `string` | none | Feishu app id for card push |
+| `feishuAppSecret` | `string` | none | Feishu app secret for card push |
 
-## Tools
+## Recommended Workflow
 
-### Task Management
+The most useful setup is:
 
-| Tool | Description |
-|------|-------------|
-| `progress_update` | Create/update a task |
-| `progress_get` | Get single task by ID |
-| `progress_list` | List tasks (filter by status) |
-| `progress_clear` | Clear one or all tasks |
+1. Create one parent task for the overall job.
+2. Create child tasks for meaningful work units.
+3. Update child tasks as they progress.
+4. Let the parent task aggregate automatically.
 
-### Analysis
-
-| Tool | Description |
-|------|-------------|
-| `progress_summary` | Human-readable task summary |
-| `progress_replay` | Full event timeline |
-| `progress_metrics` | Duration, retries, blocks, stage timing |
-| `progress_children` | Direct child tasks |
-| `progress_tree` | Task hierarchy tree |
-
-### Admin
-
-| Tool | Description |
-|------|-------------|
-| `progress_conversations` | List persisted conversation IDs |
-| `progress_health` | Plugin & adapter health check |
-| `progress_cleanup` | Remove expired/empty tasks, rebuild index |
-
-### Scheduled Updates
-
-The plugin can enable scheduled progress updates for long-running tasks.
-
-**Use cases:**
-- Task may run for a noticeable amount of time
-- User would benefit from periodic progress visibility
-- Workflow may otherwise appear stalled
-
-#### Modes
-
-**`heartbeat`**: Lightweight periodic update that keeps task alive
-- Updates internal task history
-- Refreshes current task status
-- Can optionally push progress message to conversation
-
-**`summary`**: Recap-oriented periodic update
-- Updates internal task history
-- Generates compact progress recap
-- Suitable for document-heavy workflows
-
-#### Configuration
-
-```json
-{
-  "enableScheduledUpdates": true,
-  "defaultUpdateIntervalMs": 60000,
-  "pushScheduledMessages": true
-}
-```
-
-#### Tools
-
-| Tool | Description |
-|------|-------------|
-| `progress_schedule` | Enable scheduled progress updates |
-| `progress_unschedule` | Stop scheduled progress updates |
-
-#### Example
+### Parent Task
 
 ```json
 {
   "taskId": "paper-1",
-  "intervalMs": 60000,
-  "mode": "heartbeat"
-}
-```
-
-**Note:** Scheduled updates stop automatically when task reaches `done`, `failed`, or `canceled`.
-
-## Usage Examples
-
-### Recommended: Parent + Child Tasks
-
-The recommended workflow is to create one parent task for the overall job, then update child tasks as work progresses.
-
-You only need to update child tasks in most cases. The parent task will automatically derive:
-
-- `percent` from child progress
-- `percent` can use weighted averages when child tasks provide `weight`
-- `status` from child states
-- `stage` from the earliest unfinished child stage
-- `label` from a short Chinese summary such as `1/2 子任务已完成，1 个运行中`
-- `label` can show weighted completion text such as `已完成 50%（按权重）`
-
-Example:
-
-Create the parent task:
-
-```json
-{
-  "taskId": "paper-1",
-  "label": "论文整理",
+  "label": "Paper workflow",
   "stage": "start",
   "status": "running"
 }
 ```
 
-Create and update child tasks:
+### Child Tasks
 
 ```json
 {
   "taskId": "paper-1.search",
   "parentTaskId": "paper-1",
-  "label": "检索资料",
+  "label": "Search sources",
   "stage": "research",
   "status": "running"
 }
@@ -187,22 +125,22 @@ Create and update child tasks:
 {
   "taskId": "paper-1.outline",
   "parentTaskId": "paper-1",
-  "label": "整理提纲",
+  "label": "Draft outline",
   "stage": "draft",
   "status": "running"
 }
 ```
 
-Once child tasks advance, the parent task can automatically become something like:
+As child tasks change, the parent can automatically become something like:
 
 ```text
-[research] 1/2 子任务已完成，1 个运行中
+[research] 1/2 child tasks complete, 1 running
 [======>---] 67%
 ```
 
-### Weighted Child Progress
+## Weighted Progress
 
-If child tasks do not contribute equally, add `weight` to each child task.
+If child tasks are not equally important, use `weight`.
 
 Example:
 
@@ -210,7 +148,7 @@ Example:
 {
   "taskId": "paper-1.search",
   "parentTaskId": "paper-1",
-  "label": "检索资料",
+  "label": "Search sources",
   "weight": 1,
   "stage": "done",
   "status": "done"
@@ -221,94 +159,127 @@ Example:
 {
   "taskId": "paper-1.write",
   "parentTaskId": "paper-1",
-  "label": "写正文",
+  "label": "Write main draft",
   "weight": 3,
   "stage": "research",
   "status": "running"
 }
 ```
 
-In this case, the parent task uses a weighted average instead of treating both child tasks equally:
+Now the parent percent is based on weighted average, not equal average. The parent label can show weighted context:
 
 ```text
-[research] 已完成 50%（按权重），1/2 子任务已完成，1 个运行中
+[research] 50% complete (weighted), 1/2 child tasks complete, 1 running
 [====>-----] 50%
 ```
 
-### Basic Progress Update
+## Core Tools
 
-```json
-{
-  "taskId": "paper-1",
-  "label": "正在检索资料",
-  "stage": "research",
-  "status": "running"
-}
-```
+### Task Management
 
-Output:
-```
-[research] 正在检索资料
-████░░░░░░ 40%
-```
+| Tool | Purpose |
+|---|---|
+| `progress_update` | Create or update a task |
+| `progress_get` | Get a task by `taskId` |
+| `progress_list` | List tasks in the current conversation |
+| `progress_clear` | Remove one task or all tasks |
 
-### Query Task Tree
+### Analysis
 
-```json
-{ "taskId": "paper-1" }
-```
+| Tool | Purpose |
+|---|---|
+| `progress_summary` | Summarize task progress |
+| `progress_replay` | Replay the full event history |
+| `progress_metrics` | Show duration, retries, blocks, and metrics |
+| `progress_children` | List direct children of a task |
+| `progress_tree` | Render the task tree |
 
-Output:
-```
-- paper-1 [draft] [running] 75% 正在整理答案
-  - paper-1.search [done] 100% 检索完成
-  - paper-1.outline [running] 60% 正在整理提纲
-```
+### Admin
 
-### Health Check
+| Tool | Purpose |
+|---|---|
+| `progress_conversations` | List persisted conversation ids |
+| `progress_health` | Show plugin health and config |
+| `progress_cleanup` | Remove expired or empty task records |
 
-```json
-{}
-```
+### Scheduled Updates
 
-Output:
-```
-状态：healthy。conversation 数量：3。配置：ttlMs=600000, promptContextLimit=2。
-```
+| Tool | Purpose |
+|---|---|
+| `progress_schedule` | Start scheduled updates for a task |
+| `progress_unschedule` | Stop scheduled updates |
+
+Scheduled modes:
+
+- `heartbeat`: keep a task visibly active
+- `summary`: send periodic recap-style updates
+
+### Feishu Cards
+
+| Tool | Purpose |
+|---|---|
+| `progress_pin_card` | Create or bind a pinned Feishu card |
+| `progress_refresh_card` | Refresh an existing pinned card |
+| `progress_unpin_card` | Remove a pinned card binding |
+| `progress_card_status` | Show card binding state |
+
+When a pinned task is updated, the plugin refreshes the Feishu card automatically. If a child task changes a derived parent value, the parent card can be refreshed too.
 
 ## Output Modes
 
-All query tools support `outputMode` parameter:
+Query-style tools support these output modes:
 
-- `text` (default): Human-readable
-- `compact`: Pipe-separated, e.g. `Task=paper-1 | Status=running`
-- `json`: Structured JSON
+- `text`
+- `compact`
+- `json`
 
 ## Development
 
+Install dependencies:
+
 ```bash
-# Type check
-npm run typecheck
-
-# Run tests
-npm test
-
-# Watch mode
-npm run test:watch
+npm install
 ```
 
-## Test Coverage
+Type-check:
 
-- `store.test.ts`: Core CRUD, TTL, active filtering
-- `analytics.test.ts`: Replay, metrics, summary
-- `tree.test.ts`: Hierarchy build, render
-- `file-adapter.test.ts`: Atomic writes, index, corruption handling
-- `conversations.test.ts`: List conversations
-- `admin-tools.test.ts`: Health, cleanup
+```bash
+npm run typecheck
+```
 
-## Version
+Run tests:
 
-Current: **0.3.0**
+```bash
+npm test
+```
+
+## Repository Layout
+
+```text
+src/
+  analytics/
+  feishu/
+  hooks/
+  persistence/
+  render/
+  scheduler/
+  state/
+  tree/
+  index.ts
+  ProgressManager.ts
+  types.ts
+  utils.ts
+
+test/
+  *.test.ts
+```
+
+## Notes
+
+- Task data is scoped by conversation id.
+- Parent aggregation is automatic, but only after child task events exist.
+- If you do not provide `percent`, the plugin can infer it from `stage`.
+- If you do not provide either `percent` or `stage`, leaf tasks can still advance via history-based fallback.
 
 ## License
 
